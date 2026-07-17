@@ -77,6 +77,92 @@ obscuration guard, and whether the fractional-ice lower bound was applied.
 Fractional ice is not an inversion mask. `spires-io` preserves it as numeric
 ancillary data without modifying `valid_inversion_mask`.
 
+## Snow radiative products
+
+Three independent xarray-first functions evaluate normalized lookup datasets:
+
+```python
+from spires_postprocess import (
+    compute_delta_vis,
+    compute_radiative_forcing,
+    compute_snow_albedo,
+)
+
+albedo = compute_snow_albedo(
+    inversion_results,
+    cosine_solar_zenith=io_data.scene["cosine_solar_zenith"],
+    cosine_illumination=io_data.scene["cosine_illumination"],
+    lookup=albedo_lookup,
+)
+delta_vis = compute_delta_vis(
+    inversion_results,
+    cosine_solar_zenith=io_data.scene["cosine_solar_zenith"],
+    lookup=forcing_lookup,
+)
+forcing = compute_radiative_forcing(
+    inversion_results,
+    cosine_solar_zenith=io_data.scene["cosine_solar_zenith"],
+    lookup=forcing_lookup,
+)
+```
+
+`grain_size` is effective snow grain radius in micrometers. Recognized unit
+metadata are `um`, `µm`, `μm`, `micrometer`, and `micrometers`; absent metadata
+uses this documented SPIReS convention. `dust_concentration` is ppm (or
+`parts per million`) and is transformed to LUT mass fraction by division by
+1,000,000. Soot mass fraction is fixed to zero.
+
+The albedo call adds exactly these dimensionless variables:
+
+- `albedo_clean_flat`
+- `albedo_dirty_flat`
+- `albedo_clean_terrain_corrected`
+- `albedo_dirty_terrain_corrected`
+
+Flat products evaluate `(cosine_solar_zenith, cosine_solar_zenith)`. The two
+terrain-corrected albedos evaluate
+`(cosine_solar_zenith, cosine_illumination)`. `compute_delta_vis()` adds the
+dimensionless flat-surface `delta_vis` product, and
+`compute_radiative_forcing()` adds the independent flat-surface
+`radiative_forcing` product in `W m-2`. Neither forcing call requires a runtime
+albedo product.
+
+### Normalized lookup contract
+
+Lookups are supplied as `xarray.Dataset` objects, normally normalized from
+production NetCDF by `spires-io`. `spires-postprocess` does not read lookup
+files. Variables have these exact ordered dimensions and units:
+
+| Variable | Ordered dimensions | Units |
+| --- | --- | --- |
+| `clean_albedo` | `cosine_solar_zenith, cosine_illumination, sqrt_grain_radius_um` | `1` |
+| `dirty_albedo` | the preceding three, `dust_mass_fraction, soot_mass_fraction` | `1` |
+| `delta_vis` | the dirty-albedo dimensions | `1` |
+| `radiative_forcing` | the dirty-albedo dimensions | `W m-2` |
+
+Each consumed variable is validated independently. Coordinates must be finite,
+real numeric, unique, and strictly increasing; table values must be finite real
+numbers. Zero must lie in every consumed soot domain. Albedo LUT values outside
+`[-1e-6, 1 + 1e-6]` are rejected.
+
+Interpolation is linear with no extrapolation. LUT boundary values are valid;
+missing or out-of-domain inputs produce `NaN` only at affected pixels. Albedo
+roundoff is clipped to `[0, 1]` after valid LUT content has been checked. Result
+layouts may be `(y, x)` or `(time, y, x)`, with static `(y, x)` geometry
+broadcast over time. Shared coordinates must match exactly. Dask-backed scene
+inputs remain lazy; lookup axes and values are intentionally eager.
+
+Every product records its lookup variable and axis ranges, grain-radius and
+dust transformations, zero-soot assumption, and flat or terrain-corrected
+geometry. Lookup `source`, SHA-256 checksum, atmosphere model, and dust model
+attributes are propagated when present. Input dataset variables and attributes
+remain unchanged, and existing same-named products are deterministically
+replaced in the returned copy.
+
+The grain-radius meaning, dust conversion, geometry labels, and output names
+are candidates for migration into `spires-contract` when that contract work
+resumes.
+
 Note: the `lama` dependency (tree inpainting) may need to be sourced from a
 specific distribution; the dependency list here is a placeholder for collaborators
 to refine.

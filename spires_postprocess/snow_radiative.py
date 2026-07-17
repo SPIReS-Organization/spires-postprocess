@@ -7,6 +7,12 @@ from collections.abc import Mapping
 import numpy as np
 import xarray as xr
 
+from spires_postprocess._xarray_validation import (
+    prepare_aligned_layer,
+    require_matching_coords,
+    require_real_numeric,
+    validate_target_layout,
+)
 from spires_postprocess.lookup import (
     COSINE_ILLUMINATION,
     COSINE_SOLAR_ZENITH,
@@ -20,7 +26,6 @@ from spires_postprocess.lookup import (
 )
 
 
-_SUPPORTED_RESULT_DIMS = {("y", "x"), ("time", "y", "x")}
 _GRAIN_RADIUS_UNITS = {"um", "µm", "μm", "micrometer", "micrometers"}
 _DUST_PPM_UNITS = {"ppm", "parts per million"}
 
@@ -233,19 +238,20 @@ def _validated_inversion_inputs(
 
     grain_radius = results["grain_size"]
     dust_ppm = results["dust_concentration"]
-    _validate_target_layout(grain_radius, "results['grain_size']")
-    _require_real_numeric(grain_radius, "results['grain_size']")
-    _require_real_numeric(dust_ppm, "results['dust_concentration']")
+    validate_target_layout(grain_radius, "results['grain_size']")
+    require_real_numeric(grain_radius, "results['grain_size']")
+    require_real_numeric(dust_ppm, "results['dust_concentration']")
     if dust_ppm.dims != grain_radius.dims:
         raise ValueError(
             "results['dust_concentration'] must have the same dimensions as "
             "results['grain_size']"
         )
-    _require_matching_coords(
+    require_matching_coords(
         dust_ppm,
         grain_radius,
         grain_radius.dims,
-        "results['dust_concentration']",
+        label="results['dust_concentration']",
+        target_label="results['grain_size']",
     )
     _validate_units(
         grain_radius,
@@ -268,27 +274,13 @@ def _prepare_geometry(
     *,
     name: str,
 ) -> xr.DataArray:
-    if not isinstance(geometry, xr.DataArray):
-        raise TypeError(f"{name} must be an xarray.DataArray")
-    _require_real_numeric(geometry, name)
-    allowed_dims = {target.dims}
-    if target.dims == ("time", "y", "x"):
-        allowed_dims.add(("y", "x"))
-    if geometry.dims not in allowed_dims:
-        raise ValueError(
-            f"{name} must have dimensions {target.dims}"
-            + (
-                " or ('y', 'x')"
-                if target.dims == ("time", "y", "x")
-                else ""
-            )
-            + f"; got {geometry.dims}"
-        )
-    shared_dims = tuple(dim for dim in target.dims if dim in geometry.dims)
-    _require_matching_coords(geometry, target, shared_dims, name)
-    if geometry.dims == target.dims:
-        return geometry
-    return geometry.broadcast_like(target).transpose(*target.dims)
+    return prepare_aligned_layer(
+        geometry,
+        target,
+        label=name,
+        target_label="results['grain_size']",
+        require_numeric=True,
+    )
 
 
 def _transformed_inputs(
@@ -349,32 +341,6 @@ def _with_product_metadata(
     return product
 
 
-def _validate_target_layout(data: xr.DataArray, label: str) -> None:
-    if data.dims not in _SUPPORTED_RESULT_DIMS:
-        raise ValueError(
-            f"{label} must have dimensions ('y', 'x') or ('time', 'y', 'x'); "
-            f"got {data.dims}"
-        )
-    for dimension in data.dims:
-        if dimension not in data.coords:
-            raise ValueError(f"{label} is missing coordinate {dimension!r}")
-
-
-def _require_matching_coords(
-    data: xr.DataArray,
-    target: xr.DataArray,
-    dimensions: tuple[str, ...],
-    label: str,
-) -> None:
-    for dimension in dimensions:
-        if dimension not in data.coords:
-            raise ValueError(f"{label} is missing coordinate {dimension!r}")
-        if not data.coords[dimension].equals(target.coords[dimension]):
-            raise ValueError(
-                f"{label} coordinate {dimension!r} does not match grain_size"
-            )
-
-
 def _validate_units(
     data: xr.DataArray,
     *,
@@ -389,13 +355,3 @@ def _validate_units(
         raise ValueError(
             f"{label} units must identify {convention}; got {declared!r}"
         )
-
-
-def _require_real_numeric(data: xr.DataArray, label: str) -> None:
-    dtype = np.dtype(data.dtype)
-    if (
-        not np.issubdtype(dtype, np.number)
-        or np.issubdtype(dtype, np.bool_)
-        or np.issubdtype(dtype, np.complexfloating)
-    ):
-        raise ValueError(f"{label} must contain real numeric values; got {dtype}")

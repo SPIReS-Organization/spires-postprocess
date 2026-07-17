@@ -5,10 +5,15 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
+from spires_postprocess._xarray_validation import (
+    prepare_aligned_layer,
+    require_matching_coords,
+    validate_target_layout,
+)
+
 
 _OBSCURATION_LIMIT = 0.99
 _GEOMETRY_EPSILON = 1.0e-6
-_SUPPORTED_RESULT_DIMS = {("y", "x"), ("time", "y", "x")}
 
 
 def calculate_viewable_canopy_fraction(
@@ -33,7 +38,7 @@ def calculate_viewable_canopy_fraction(
         average_vertical_crown_radius,
         average_horizontal_crown_radius,
     )
-    target_dims = _validate_target_dims(sensor_zenith, "sensor_zenith")
+    target_dims = validate_target_layout(sensor_zenith, "sensor_zenith")
     sensor_zenith = _prepare_geometry_layer(
         sensor_zenith,
         sensor_zenith,
@@ -256,25 +261,22 @@ def _validated_results(results: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]
 
     fsca = results["fsca"]
     fshade = results["fshade"]
-    _validate_target_dims(fsca, "results['fsca']")
+    validate_target_layout(fsca, "results['fsca']")
     if fshade.dims != fsca.dims:
         raise ValueError(
             "results['fshade'] must have the same dimensions as results['fsca']"
         )
-    _require_matching_coords(fshade, fsca, fsca.dims, "results['fshade']")
+    require_matching_coords(
+        fshade,
+        fsca,
+        fsca.dims,
+        label="results['fshade']",
+        target_label="results['fsca']",
+    )
     return (
         fsca.astype("float32").clip(min=0.0, max=1.0),
         fshade.astype("float32").clip(min=0.0, max=1.0),
     )
-
-
-def _validate_target_dims(data: xr.DataArray, name: str) -> tuple[str, ...]:
-    if data.dims not in _SUPPORTED_RESULT_DIMS:
-        raise ValueError(
-            f"{name} must have dimensions ('y', 'x') or ('time', 'y', 'x'); "
-            f"got {data.dims}"
-        )
-    return data.dims
 
 
 def _prepare_fraction_layer(
@@ -283,7 +285,7 @@ def _prepare_fraction_layer(
     *,
     name: str,
 ) -> xr.DataArray:
-    prepared = _prepare_layer(layer, target, name=name)
+    prepared = prepare_aligned_layer(layer, target, label=name)
     return prepared.astype("float32").clip(min=0.0, max=1.0)
 
 
@@ -293,37 +295,7 @@ def _prepare_geometry_layer(
     *,
     name: str,
 ) -> xr.DataArray:
-    return _prepare_layer(layer, target, name=name).astype("float32")
-
-
-def _prepare_layer(
-    layer: xr.DataArray,
-    target: xr.DataArray,
-    *,
-    name: str,
-) -> xr.DataArray:
-    if not isinstance(layer, xr.DataArray):
-        raise TypeError(f"{name} must be an xarray.DataArray")
-    allowed_dims = {("y", "x"), target.dims}
-    if layer.dims not in allowed_dims:
-        raise ValueError(
-            f"{name} must have dimensions ('y', 'x') or {target.dims}; got {layer.dims}"
-        )
-    _require_matching_coords(layer, target, layer.dims, name)
-    return layer
-
-
-def _require_matching_coords(
-    layer: xr.DataArray,
-    target: xr.DataArray,
-    dims: tuple[str, ...],
-    name: str,
-) -> None:
-    for dim in dims:
-        if dim not in layer.coords or dim not in target.coords:
-            raise ValueError(f"{name} and the target must both define coordinate {dim!r}")
-        if not np.array_equal(layer.coords[dim].values, target.coords[dim].values):
-            raise ValueError(f"{name} coordinate {dim!r} does not match the target")
+    return prepare_aligned_layer(layer, target, label=name).astype("float32")
 
 
 def _validate_crown_radii(vertical: float, horizontal: float) -> None:

@@ -10,6 +10,8 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 import xarray as xr
 
+from spires_postprocess._xarray_validation import require_real_numeric_dtype
+
 
 COSINE_SOLAR_ZENITH = "cosine_solar_zenith"
 COSINE_ILLUMINATION = "cosine_illumination"
@@ -206,7 +208,9 @@ def _validated_coordinate(
             f"lookup coordinate {dimension!r} must be one-dimensional with "
             f"dimensions ({dimension!r},); got {coordinate.dims}"
         )
-    _require_real_numeric(coordinate.dtype, f"lookup coordinate {dimension!r}")
+    require_real_numeric_dtype(
+        coordinate.dtype, f"lookup coordinate {dimension!r}"
+    )
     values = np.asarray(coordinate.data, dtype=np.float64)
     if values.size == 0:
         raise ValueError(f"lookup coordinate {dimension!r} must not be empty")
@@ -220,18 +224,8 @@ def _validated_coordinate(
 
 
 def _validated_table_values(data: xr.DataArray, *, variable: str) -> np.ndarray:
-    _require_real_numeric(data.dtype, f"lookup variable {variable!r}")
+    require_real_numeric_dtype(data.dtype, f"lookup variable {variable!r}")
     values = np.asarray(data.data, dtype=np.float64)
     if not np.all(np.isfinite(values)):
         raise ValueError(f"lookup variable {variable!r} must be entirely finite")
     return np.ascontiguousarray(values)
-
-
-def _require_real_numeric(dtype: np.dtype, label: str) -> None:
-    dtype = np.dtype(dtype)
-    if (
-        not np.issubdtype(dtype, np.number)
-        or np.issubdtype(dtype, np.bool_)
-        or np.issubdtype(dtype, np.complexfloating)
-    ):
-        raise ValueError(f"{label} must contain real numeric values; got {dtype}")

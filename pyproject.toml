@@ -5,14 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spires-postprocess"
 version = "0.1.0"
-description = "SPIReS postprocessing: cloud gap-fill and tree masking/inpainting"
+description = "SPIReS postprocessing: canopy, ice, cloud gap-fill, and inpainting"
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Niklas Griessbaum" }]
-keywords = ["snow", "remote sensing", "xarray", "cloud gap-fill", "inpainting"]
+keywords = ["snow", "remote sensing", "xarray", "canopy", "glacier ice", "inpainting"]
 dependencies = [
     "spires-contract",
+    "numpy",
+    "xarray",
     "scipy",
     "torch",
     "lama",
@@ -26,8 +28,8 @@ Homepage = "https://github.com/SPIReS-Organization/spires-postprocess"
 Repository = "https://github.com/SPIReS-Organization/spires-postprocess"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["./"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["./"]

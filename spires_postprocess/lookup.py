@@ -10,7 +10,10 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 import xarray as xr
 
-from spires_postprocess._xarray_validation import require_real_numeric_dtype
+from spires_postprocess._xarray_validation import (
+    require_float32,
+    require_real_numeric_dtype,
+)
 
 
 COSINE_SOLAR_ZENITH = "cosine_solar_zenith"
@@ -71,7 +74,9 @@ def validate_lookup_table(lookup: xr.Dataset, variable: str) -> LookupTable:
     """Validate and normalize one required variable from a lookup dataset.
 
     Only ``variable`` and its coordinates are inspected. Malformed unrelated
-    variables in a combined dataset do not affect this validation call.
+    variables in a combined dataset do not affect this validation call. Lookup
+    data variables must be float32; coordinate dtypes remain unconstrained apart
+    from being real numeric.
     """
     if not isinstance(lookup, xr.Dataset):
         raise TypeError("lookup must be an xarray.Dataset")
@@ -224,8 +229,12 @@ def _validated_coordinate(
 
 
 def _validated_table_values(data: xr.DataArray, *, variable: str) -> np.ndarray:
-    require_real_numeric_dtype(data.dtype, f"lookup variable {variable!r}")
-    values = np.asarray(data.data, dtype=np.float64)
+    require_float32(data, f"lookup variable {variable!r}")
+    # Retain canonical float32 storage. RegularGridInterpolator promotes its
+    # coordinate/weight arithmetic and returned values to float64 as needed;
+    # eagerly doubling the complete LUT here adds memory without recovering any
+    # precision that was not present in the validated float32 source values.
+    values = np.ascontiguousarray(np.asarray(data.data))
     if not np.all(np.isfinite(values)):
         raise ValueError(f"lookup variable {variable!r} must be entirely finite")
-    return np.ascontiguousarray(values)
+    return values

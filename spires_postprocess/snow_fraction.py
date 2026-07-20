@@ -7,7 +7,9 @@ import xarray as xr
 
 from spires_postprocess._xarray_validation import (
     prepare_aligned_layer,
+    require_float32,
     require_matching_coords,
+    require_values_in_range,
     validate_target_layout,
 )
 
@@ -32,7 +34,8 @@ def calculate_viewable_canopy_fraction(
     Static ``(y, x)`` canopy and terrain layers broadcast over sensor geometry with
     ``(time, y, x)`` dimensions. Slope and aspect must either both be supplied or
     both be omitted. Terrain-aware calculations expect sensor azimuth and aspect
-    in degrees clockwise from north.
+    in degrees clockwise from north. All scientific input arrays must already be
+    float32. NaNs are preserved; invalid finite geometry or fraction values raise.
     """
     _validate_crown_radii(
         average_vertical_crown_radius,
@@ -43,7 +46,9 @@ def calculate_viewable_canopy_fraction(
         sensor_zenith,
         sensor_zenith,
         name="sensor_zenith",
-    ).where((sensor_zenith >= 0.0) & (sensor_zenith <= 90.0))
+        minimum=0.0,
+        maximum=90.0,
+    )
     canopy = _prepare_fraction_layer(
         canopy_fraction,
         sensor_zenith,
@@ -66,21 +71,26 @@ def calculate_viewable_canopy_fraction(
             raise ValueError(
                 "sensor_azimuth is required when slope and aspect are provided"
             )
-        slope_layer = _prepare_geometry_layer(slope, sensor_zenith, name="slope")
-        aspect_layer = _prepare_geometry_layer(aspect, sensor_zenith, name="aspect")
+        slope_layer = _prepare_geometry_layer(
+            slope,
+            sensor_zenith,
+            name="slope",
+            minimum=0.0,
+            maximum=90.0,
+        )
+        aspect_layer = _prepare_geometry_layer(
+            aspect,
+            sensor_zenith,
+            name="aspect",
+            minimum=0.0,
+            maximum=360.0,
+        )
         sensor_azimuth_layer = _prepare_geometry_layer(
             sensor_azimuth,
             sensor_zenith,
             name="sensor_azimuth",
-        )
-        slope_layer = slope_layer.where(
-            (slope_layer >= 0.0) & (slope_layer <= 90.0)
-        )
-        aspect_layer = aspect_layer.where(
-            (aspect_layer >= 0.0) & (aspect_layer <= 360.0)
-        )
-        sensor_azimuth_layer = sensor_azimuth_layer.where(
-            (sensor_azimuth_layer >= 0.0) & (sensor_azimuth_layer <= 360.0)
+            minimum=0.0,
+            maximum=360.0,
         )
 
         theta_s_prime = np.deg2rad(
@@ -146,7 +156,8 @@ def apply_snow_fraction_adjustments(
     ice-adjusted layer is calculated directly from the original ``fsca`` using
     shade, viewable canopy, and ice together, matching the SPIRES 2025.0.1 daily
     calculation. The input dataset and its original ``fsca``/``fshade`` variables
-    are not modified.
+    are not modified. Required results and ancillary inputs must already be
+    float32 and within their documented physical ranges.
     """
     if canopy_fraction is None and ice_fraction is None:
         raise ValueError("provide canopy_fraction, ice_fraction, or both")
@@ -262,6 +273,20 @@ def _validated_results(results: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]
     fsca = results["fsca"]
     fshade = results["fshade"]
     validate_target_layout(fsca, "results['fsca']")
+    require_float32(fsca, "results['fsca']")
+    require_float32(fshade, "results['fshade']")
+    require_values_in_range(
+        fsca,
+        "results['fsca']",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    require_values_in_range(
+        fshade,
+        "results['fshade']",
+        minimum=0.0,
+        maximum=1.0,
+    )
     if fshade.dims != fsca.dims:
         raise ValueError(
             "results['fshade'] must have the same dimensions as results['fsca']"
@@ -273,10 +298,7 @@ def _validated_results(results: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]
         label="results['fshade']",
         target_label="results['fsca']",
     )
-    return (
-        fsca.astype("float32").clip(min=0.0, max=1.0),
-        fshade.astype("float32").clip(min=0.0, max=1.0),
-    )
+    return fsca, fshade
 
 
 def _prepare_fraction_layer(
@@ -286,7 +308,9 @@ def _prepare_fraction_layer(
     name: str,
 ) -> xr.DataArray:
     prepared = prepare_aligned_layer(layer, target, label=name)
-    return prepared.astype("float32").clip(min=0.0, max=1.0)
+    require_float32(prepared, name)
+    require_values_in_range(prepared, name, minimum=0.0, maximum=1.0)
+    return prepared
 
 
 def _prepare_geometry_layer(
@@ -294,8 +318,18 @@ def _prepare_geometry_layer(
     target: xr.DataArray,
     *,
     name: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
 ) -> xr.DataArray:
-    return prepare_aligned_layer(layer, target, label=name).astype("float32")
+    prepared = prepare_aligned_layer(layer, target, label=name)
+    require_float32(prepared, name)
+    require_values_in_range(
+        prepared,
+        name,
+        minimum=minimum,
+        maximum=maximum,
+    )
+    return prepared
 
 
 def _validate_crown_radii(vertical: float, horizontal: float) -> None:

@@ -9,8 +9,9 @@ import xarray as xr
 
 from spires_postprocess._xarray_validation import (
     prepare_aligned_layer,
+    require_float32,
     require_matching_coords,
-    require_real_numeric,
+    require_values_in_range,
     validate_target_layout,
 )
 from spires_postprocess.lookup import (
@@ -43,7 +44,8 @@ def compute_snow_albedo(
     ``results['dust_concentration']`` is parts per million and is divided by
     1,000,000 for lookup evaluation. Soot mass fraction is fixed to zero.
     Missing or out-of-domain pixels return NaN; lookup extrapolation is never
-    performed. The caller's dataset is not modified.
+    performed. Scientific input arrays and lookup data variables must already be
+    float32. The caller's dataset is not modified.
     """
     grain_radius, dust_ppm = _validated_inversion_inputs(results)
     mu0 = _prepare_geometry(
@@ -150,7 +152,8 @@ def compute_delta_vis(
 
     Grain size is effective snow grain radius in micrometers; dust
     concentration is ppm and is divided by 1,000,000. Soot is fixed to zero.
-    Missing or out-of-domain required inputs produce NaN pixels.
+    Missing or out-of-domain required inputs produce NaN pixels. Scientific
+    input arrays and lookup data variables must already be float32.
     """
     return _compute_flat_dirty_product(
         results,
@@ -173,7 +176,8 @@ def compute_radiative_forcing(
 
     Grain size is effective snow grain radius in micrometers; dust
     concentration is ppm and is divided by 1,000,000. Soot is fixed to zero.
-    Missing or out-of-domain required inputs produce NaN pixels.
+    Missing or out-of-domain required inputs produce NaN pixels. Scientific
+    input arrays and lookup data variables must already be float32.
     """
     return _compute_flat_dirty_product(
         results,
@@ -239,8 +243,18 @@ def _validated_inversion_inputs(
     grain_radius = results["grain_size"]
     dust_ppm = results["dust_concentration"]
     validate_target_layout(grain_radius, "results['grain_size']")
-    require_real_numeric(grain_radius, "results['grain_size']")
-    require_real_numeric(dust_ppm, "results['dust_concentration']")
+    require_float32(grain_radius, "results['grain_size']")
+    require_float32(dust_ppm, "results['dust_concentration']")
+    require_values_in_range(
+        grain_radius,
+        "results['grain_size']",
+        minimum=0.0,
+    )
+    require_values_in_range(
+        dust_ppm,
+        "results['dust_concentration']",
+        minimum=0.0,
+    )
     if dust_ppm.dims != grain_radius.dims:
         raise ValueError(
             "results['dust_concentration'] must have the same dimensions as "
@@ -274,25 +288,28 @@ def _prepare_geometry(
     *,
     name: str,
 ) -> xr.DataArray:
-    return prepare_aligned_layer(
+    prepared = prepare_aligned_layer(
         geometry,
         target,
         label=name,
         target_label="results['grain_size']",
-        require_numeric=True,
     )
+    require_float32(prepared, name)
+    minimum = 0.0 if name == COSINE_SOLAR_ZENITH else -1.0
+    require_values_in_range(prepared, name, minimum=minimum, maximum=1.0)
+    return prepared
 
 
 def _transformed_inputs(
     grain_radius: xr.DataArray,
     dust_ppm: xr.DataArray,
 ) -> dict[str, xr.DataArray]:
-    sqrt_grain_radius = np.sqrt(grain_radius.where(grain_radius >= 0.0))
-    dust_mass_fraction = dust_ppm / 1_000_000.0
+    sqrt_grain_radius = np.sqrt(grain_radius).astype("float32")
+    dust_mass_fraction = (dust_ppm / np.float32(1_000_000.0)).astype("float32")
     return {
         SQRT_GRAIN_RADIUS_UM: sqrt_grain_radius,
         DUST_MASS_FRACTION: dust_mass_fraction,
-        SOOT_MASS_FRACTION: xr.zeros_like(grain_radius, dtype=np.float64),
+        SOOT_MASS_FRACTION: xr.zeros_like(grain_radius, dtype=np.float32),
     }
 
 

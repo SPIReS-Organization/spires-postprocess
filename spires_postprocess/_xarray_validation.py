@@ -86,6 +86,50 @@ def require_real_numeric(data: xr.DataArray, label: str) -> None:
     require_real_numeric_dtype(data.dtype, label)
 
 
+def require_float32(data: xr.DataArray, label: str) -> None:
+    """Require the canonical scientific-data boundary dtype without casting."""
+    if not isinstance(data, xr.DataArray):
+        raise TypeError(f"{label} must be an xarray.DataArray")
+    normalized = np.dtype(data.dtype)
+    if normalized != np.dtype(np.float32):
+        raise ValueError(
+            f"{label} must have dtype float32 at the package boundary; "
+            f"got {normalized}"
+        )
+
+
+def require_values_in_range(
+    data: xr.DataArray,
+    label: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> None:
+    """Reject infinite or out-of-range finite values while allowing NaNs.
+
+    Dask-backed inputs remain Dask-backed, although validating their values
+    necessarily evaluates the Boolean reduction used by this check.
+    """
+    invalid = np.isinf(data)
+    constraints = []
+    if minimum is not None:
+        invalid = invalid | (data < minimum)
+        constraints.append(f">= {minimum:g}")
+    if maximum is not None:
+        invalid = invalid | (data > maximum)
+        constraints.append(f"<= {maximum:g}")
+
+    reduced = invalid.any()
+    if hasattr(reduced.data, "compute"):
+        reduced = reduced.compute()
+    if bool(reduced.item()):
+        expected = " and ".join(constraints) if constraints else "finite or NaN"
+        raise ValueError(
+            f"{label} contains infinite or out-of-range values; expected "
+            f"finite values {expected}, with NaN allowed"
+        )
+
+
 def require_real_numeric_dtype(dtype: np.dtype, label: str) -> None:
     """Require a non-boolean, non-complex NumPy numeric dtype."""
     normalized = np.dtype(dtype)

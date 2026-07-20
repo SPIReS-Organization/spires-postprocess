@@ -65,8 +65,10 @@ ice, slope, and aspect layers broadcast over time. Time-dependent sensor
 geometry may use `(time, y, x)`. All supplied coordinates must match exactly;
 reprojection and normalization belong to `spires-io`.
 
-The implementation preserves NaNs and Dask-backed lazy arrays. Fractional
-inputs and outputs are clipped to `[0, 1]`.
+The implementation preserves NaNs and Dask-backed lazy arrays. Scientific data
+inputs must already be `float32` at the package boundary. Fractional inputs are
+validated within `[0, 1]` rather than cast or clipped; derived fractional outputs
+are clipped where clipping is part of the documented formulas.
 
 ### Provenance
 
@@ -140,17 +142,21 @@ files. Variables have these exact ordered dimensions and units:
 | `delta_vis` | the dirty-albedo dimensions | `1` |
 | `radiative_forcing` | the dirty-albedo dimensions | `W m-2` |
 
-Each consumed variable is validated independently. Coordinates must be finite,
-real numeric, unique, and strictly increasing; table values must be finite real
-numbers. Zero must lie in every consumed soot domain. Albedo LUT values outside
-`[-1e-6, 1 + 1e-6]` are rejected.
+Each consumed variable is validated independently. Lookup data variables must
+be `float32`; coordinates retain their appropriate numeric dtypes and must be
+finite, unique, and strictly increasing. Table values must be finite. Zero must
+lie in every consumed soot domain. Albedo LUT values outside `[-1e-6, 1 + 1e-6]`
+are rejected.
 
 Interpolation is linear with no extrapolation. LUT boundary values are valid;
 missing or out-of-domain inputs produce `NaN` only at affected pixels. Albedo
 roundoff is clipped to `[0, 1]` after valid LUT content has been checked. Result
 layouts may be `(y, x)` or `(time, y, x)`, with static `(y, x)` geometry
 broadcast over time. Shared coordinates must match exactly. Dask-backed scene
-inputs remain lazy; lookup axes and values are intentionally eager.
+inputs remain lazy; lookup axes and values are intentionally eager. Lookup
+values remain stored as contiguous `float32`; SciPy may use float64 coordinate
+and interpolation-weight arithmetic internally before products are returned as
+`float32`.
 
 Every product records its lookup variable and axis ranges, grain-radius and
 dust transformations, zero-soot assumption, and flat or terrain-corrected

@@ -1,0 +1,44 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build + import smoke on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for setuptools-scm
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      # Install the light import-time deps (numpy/xarray/scipy + contract from
+      # git) rather than the full dependency set: torch and lama are heavy and
+      # only used lazily, and the family deps are not yet on PyPI. This
+      # validates packaging + the public import surface. Upgrade to a full
+      # ".[test]" + pytest run once tests land.
+      - name: Install import-time deps + smoke test
+        run: |
+          pip install numpy xarray scipy
+          pip install "spires-contract @ git+https://github.com/SPIReS-Organization/spires-contract@v1.0.0"
+          pip install --no-deps dist/*.whl
+          python -c "import spires_postprocess; print('spires_postprocess', spires_postprocess.__version__)"

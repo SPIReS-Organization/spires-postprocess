@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "spires-postprocess"
-version = "0.1.0"
+dynamic = ["version"]  # version derived from git tags via setuptools_scm
 description = "SPIReS postprocessing: canopy, ice, cloud gap-fill, and inpainting"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -33,3 +33,7 @@ where = ["./"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["./"]
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "node-and-date"

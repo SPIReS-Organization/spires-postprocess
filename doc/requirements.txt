@@ -1,0 +1,16 @@
+# Sphinx doc build dependencies for spires-postprocess.
+sphinx>=4.0
+pydata-sphinx-theme
+myst-parser
+sphinx-markdown-tables
+setuptools-scm
+
+# Import-time deps needed for autodoc introspection (torch/lama are mocked in
+# conf.py, so they are not installed here).
+numpy
+xarray
+scipy
+
+# spires-contract is imported by the package; not yet on PyPI — install the
+# pinned tag from GitHub. Replace with a plain version spec once it publishes.
+spires-contract @ git+https://github.com/SPIReS-Organization/spires-contract@v1.0.0

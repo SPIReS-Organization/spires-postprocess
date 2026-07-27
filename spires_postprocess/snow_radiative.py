@@ -15,11 +15,12 @@ from spires_postprocess._xarray_validation import (
     validate_target_layout,
 )
 from spires_postprocess.lookup import (
-    COSINE_ILLUMINATION,
-    COSINE_SOLAR_ZENITH,
-    DUST_MASS_FRACTION,
-    SOOT_MASS_FRACTION,
-    SQRT_GRAIN_RADIUS_UM,
+    ALTITUDE,
+    ILLUMINATION_ANGLE,
+    LAP_CONCENTRATION,
+    SKYVIEW,
+    SOLAR_ZENITH,
+    SQRT_GRAIN_RADIUS,
     LookupTable,
     interpolate_lookup,
     lookup_axis_ranges,
@@ -28,7 +29,8 @@ from spires_postprocess.lookup import (
 
 
 _GRAIN_RADIUS_UNITS = {"um", "µm", "μm", "micrometer", "micrometers"}
-_DUST_PPM_UNITS = {"ppm", "parts per million"}
+_LAP_PPM_UNITS = {"ppm", "parts per million"}
+_ALTITUDE_KM_UNITS = {"km", "kilometer", "kilometers", "kilometre", "kilometres"}
 
 
 def compute_snow_albedo(
@@ -37,65 +39,82 @@ def compute_snow_albedo(
     cosine_solar_zenith: xr.DataArray,
     cosine_illumination: xr.DataArray,
     lookup: xr.Dataset,
+    skyview: xr.DataArray | None = None,
+    altitude: xr.DataArray | None = None,
 ) -> xr.Dataset:
-    """Add four clean/dirty flat/terrain-corrected snow albedo products.
+    """Add clean/dirty flat/terrain-corrected snow albedo products.
 
-    ``results['grain_size']`` is effective snow grain radius in micrometers.
-    ``results['dust_concentration']`` is parts per million and is divided by
-    1,000,000 for lookup evaluation. Soot mass fraction is fixed to zero.
-    Missing or out-of-domain pixels return NaN; lookup extrapolation is never
-    performed. Scientific input arrays and lookup data variables must already be
-    float32. The caller's dataset is not modified.
+    The canonical lookup contains one ``albedo`` variable. Clean products are
+    evaluated at zero LAP concentration, while dirty products use the retrieved
+    ``lap_concentration``. Geometry cosines are explicitly converted to the
+    lookup's degree-valued axes. Optional sky-view and altitude inputs are
+    required only when those axes are present in the lookup.
     """
-    grain_radius, dust_ppm = _validated_inversion_inputs(results)
-    mu0 = _prepare_geometry(
+    grain_radius, lap_ppm = _validated_inversion_inputs(results)
+    solar_zenith = _angle_from_cosine(
         cosine_solar_zenith,
         grain_radius,
-        name=COSINE_SOLAR_ZENITH,
+        name="cosine_solar_zenith",
     )
-    mu_i = _prepare_geometry(
+    illumination_angle = _angle_from_cosine(
         cosine_illumination,
         grain_radius,
-        name=COSINE_ILLUMINATION,
+        name="cosine_illumination",
     )
-    clean_table = validate_lookup_table(lookup, "clean_albedo")
-    dirty_table = validate_lookup_table(lookup, "dirty_albedo")
+    table = validate_lookup_table(lookup, "albedo")
+    _require_zero_lap(table)
 
-    transformed = _transformed_inputs(grain_radius, dust_ppm)
+    clean_lap = xr.zeros_like(lap_ppm, dtype=np.float32)
     clean_flat = _evaluate(
-        clean_table,
-        {
-            COSINE_SOLAR_ZENITH: mu0,
-            COSINE_ILLUMINATION: mu0,
-            SQRT_GRAIN_RADIUS_UM: transformed[SQRT_GRAIN_RADIUS_UM],
-        },
+        table,
+        _lookup_inputs(
+            table,
+            grain_radius=grain_radius,
+            lap_concentration=clean_lap,
+            solar_zenith=solar_zenith,
+            illumination_angle=solar_zenith,
+            skyview=skyview,
+            altitude=altitude,
+        ),
         grain_radius,
     ).clip(min=0.0, max=1.0)
     dirty_flat = _evaluate(
-        dirty_table,
-        {
-            COSINE_SOLAR_ZENITH: mu0,
-            COSINE_ILLUMINATION: mu0,
-            **transformed,
-        },
+        table,
+        _lookup_inputs(
+            table,
+            grain_radius=grain_radius,
+            lap_concentration=lap_ppm,
+            solar_zenith=solar_zenith,
+            illumination_angle=solar_zenith,
+            skyview=skyview,
+            altitude=altitude,
+        ),
         grain_radius,
     ).clip(min=0.0, max=1.0)
     clean_terrain = _evaluate(
-        clean_table,
-        {
-            COSINE_SOLAR_ZENITH: mu0,
-            COSINE_ILLUMINATION: mu_i,
-            SQRT_GRAIN_RADIUS_UM: transformed[SQRT_GRAIN_RADIUS_UM],
-        },
+        table,
+        _lookup_inputs(
+            table,
+            grain_radius=grain_radius,
+            lap_concentration=clean_lap,
+            solar_zenith=solar_zenith,
+            illumination_angle=illumination_angle,
+            skyview=skyview,
+            altitude=altitude,
+        ),
         grain_radius,
     ).clip(min=0.0, max=1.0)
     dirty_terrain = _evaluate(
-        dirty_table,
-        {
-            COSINE_SOLAR_ZENITH: mu0,
-            COSINE_ILLUMINATION: mu_i,
-            **transformed,
-        },
+        table,
+        _lookup_inputs(
+            table,
+            grain_radius=grain_radius,
+            lap_concentration=lap_ppm,
+            solar_zenith=solar_zenith,
+            illumination_angle=illumination_angle,
+            skyview=skyview,
+            altitude=altitude,
+        ),
         grain_radius,
     ).clip(min=0.0, max=1.0)
 
@@ -104,39 +123,40 @@ def compute_snow_albedo(
         (
             "albedo_clean_flat",
             clean_flat,
-            clean_table,
             "Clean-snow albedo for flat geometry",
             "flat",
+            "zero",
         ),
         (
             "albedo_dirty_flat",
             dirty_flat,
-            dirty_table,
             "Dust-affected snow albedo for flat geometry",
             "flat",
+            "retrieved",
         ),
         (
             "albedo_clean_terrain_corrected",
             clean_terrain,
-            clean_table,
             "Clean-snow albedo corrected for local terrain illumination",
             "terrain_corrected",
+            "zero",
         ),
         (
             "albedo_dirty_terrain_corrected",
             dirty_terrain,
-            dirty_table,
             "Dust-affected snow albedo corrected for local terrain illumination",
             "terrain_corrected",
+            "retrieved",
         ),
     )
-    for name, values, table, long_name, geometry in products:
+    for name, values, long_name, geometry, lap_evaluation in products:
         updated[name] = _with_product_metadata(
             values,
             name=name,
             long_name=long_name,
             units="1",
             geometry=geometry,
+            lap_evaluation=lap_evaluation,
             table=table,
         )
     return updated
@@ -148,14 +168,8 @@ def compute_delta_vis(
     cosine_solar_zenith: xr.DataArray,
     lookup: xr.Dataset,
 ) -> xr.Dataset:
-    """Add flat-surface dimensionless delta-VIS from its independent LUT.
-
-    Grain size is effective snow grain radius in micrometers; dust
-    concentration is ppm and is divided by 1,000,000. Soot is fixed to zero.
-    Missing or out-of-domain required inputs produce NaN pixels. Scientific
-    input arrays and lookup data variables must already be float32.
-    """
-    return _compute_flat_dirty_product(
+    """Add flat-surface visible albedo reduction from its canonical LUT."""
+    return _compute_flat_dust_product(
         results,
         cosine_solar_zenith=cosine_solar_zenith,
         lookup=lookup,
@@ -172,14 +186,8 @@ def compute_radiative_forcing(
     cosine_solar_zenith: xr.DataArray,
     lookup: xr.Dataset,
 ) -> xr.Dataset:
-    """Add flat-surface snow radiative forcing in W m-2 from its LUT.
-
-    Grain size is effective snow grain radius in micrometers; dust
-    concentration is ppm and is divided by 1,000,000. Soot is fixed to zero.
-    Missing or out-of-domain required inputs produce NaN pixels. Scientific
-    input arrays and lookup data variables must already be float32.
-    """
-    return _compute_flat_dirty_product(
+    """Add flat-surface snow radiative forcing from its canonical LUT."""
+    return _compute_flat_dust_product(
         results,
         cosine_solar_zenith=cosine_solar_zenith,
         lookup=lookup,
@@ -190,7 +198,7 @@ def compute_radiative_forcing(
     )
 
 
-def _compute_flat_dirty_product(
+def _compute_flat_dust_product(
     results: xr.Dataset,
     *,
     cosine_solar_zenith: xr.DataArray,
@@ -200,21 +208,22 @@ def _compute_flat_dirty_product(
     long_name: str,
     units: str,
 ) -> xr.Dataset:
-    grain_radius, dust_ppm = _validated_inversion_inputs(results)
-    mu0 = _prepare_geometry(
+    grain_radius, lap_ppm = _validated_inversion_inputs(results)
+    solar_zenith = _angle_from_cosine(
         cosine_solar_zenith,
         grain_radius,
-        name=COSINE_SOLAR_ZENITH,
+        name="cosine_solar_zenith",
     )
     table = validate_lookup_table(lookup, table_name)
-    transformed = _transformed_inputs(grain_radius, dust_ppm)
     values = _evaluate(
         table,
-        {
-            COSINE_SOLAR_ZENITH: mu0,
-            COSINE_ILLUMINATION: mu0,
-            **transformed,
-        },
+        _lookup_inputs(
+            table,
+            grain_radius=grain_radius,
+            lap_concentration=lap_ppm,
+            solar_zenith=solar_zenith,
+            illumination_angle=solar_zenith,
+        ),
         grain_radius,
     )
     updated = results.copy()
@@ -224,6 +233,7 @@ def _compute_flat_dirty_product(
         long_name=long_name,
         units=units,
         geometry="flat",
+        lap_evaluation="retrieved",
         table=table,
     )
     return updated
@@ -235,82 +245,133 @@ def _validated_inversion_inputs(
     if not isinstance(results, xr.Dataset):
         raise TypeError("results must be an xarray.Dataset")
     missing = [
-        name for name in ("grain_size", "dust_concentration") if name not in results
+        name for name in ("grain_radius", "lap_concentration") if name not in results
     ]
     if missing:
         raise ValueError(f"results is missing required variable(s): {missing}")
 
-    grain_radius = results["grain_size"]
-    dust_ppm = results["dust_concentration"]
-    validate_target_layout(grain_radius, "results['grain_size']")
-    require_float32(grain_radius, "results['grain_size']")
-    require_float32(dust_ppm, "results['dust_concentration']")
+    grain_radius = results["grain_radius"]
+    lap_ppm = results["lap_concentration"]
+    validate_target_layout(grain_radius, "results['grain_radius']")
+    require_float32(grain_radius, "results['grain_radius']")
+    require_float32(lap_ppm, "results['lap_concentration']")
     require_values_in_range(
         grain_radius,
-        "results['grain_size']",
+        "results['grain_radius']",
         minimum=0.0,
     )
     require_values_in_range(
-        dust_ppm,
-        "results['dust_concentration']",
+        lap_ppm,
+        "results['lap_concentration']",
         minimum=0.0,
     )
-    if dust_ppm.dims != grain_radius.dims:
+    if lap_ppm.dims != grain_radius.dims:
         raise ValueError(
-            "results['dust_concentration'] must have the same dimensions as "
-            "results['grain_size']"
+            "results['lap_concentration'] must have the same dimensions as "
+            "results['grain_radius']"
         )
     require_matching_coords(
-        dust_ppm,
+        lap_ppm,
         grain_radius,
         grain_radius.dims,
-        label="results['dust_concentration']",
-        target_label="results['grain_size']",
+        label="results['lap_concentration']",
+        target_label="results['grain_radius']",
     )
-    _validate_units(
+    _require_units(
         grain_radius,
         allowed=_GRAIN_RADIUS_UNITS,
-        label="results['grain_size']",
+        label="results['grain_radius']",
         convention="effective snow grain radius in micrometers",
     )
-    _validate_units(
-        dust_ppm,
-        allowed=_DUST_PPM_UNITS,
-        label="results['dust_concentration']",
+    _require_units(
+        lap_ppm,
+        allowed=_LAP_PPM_UNITS,
+        label="results['lap_concentration']",
         convention="parts per million",
     )
-    return grain_radius, dust_ppm
+    if lap_ppm.attrs.get("lap_type") != "dust":
+        raise ValueError(
+            "results['lap_concentration'] must declare lap_type='dust' "
+            "for dust-specific postprocessing"
+        )
+    return grain_radius, lap_ppm
 
 
-def _prepare_geometry(
-    geometry: xr.DataArray,
+def _angle_from_cosine(
+    cosine: xr.DataArray,
     target: xr.DataArray,
     *,
     name: str,
 ) -> xr.DataArray:
     prepared = prepare_aligned_layer(
-        geometry,
+        cosine,
         target,
         label=name,
-        target_label="results['grain_size']",
+        target_label="results['grain_radius']",
     )
     require_float32(prepared, name)
-    minimum = 0.0 if name == COSINE_SOLAR_ZENITH else -1.0
-    require_values_in_range(prepared, name, minimum=minimum, maximum=1.0)
-    return prepared
+    require_values_in_range(prepared, name, minimum=0.0, maximum=1.0)
+    angle = np.rad2deg(np.arccos(prepared))
+    return angle.transpose(*target.dims).astype("float32")
 
 
-def _transformed_inputs(
+def _lookup_inputs(
+    table: LookupTable,
+    *,
     grain_radius: xr.DataArray,
-    dust_ppm: xr.DataArray,
+    lap_concentration: xr.DataArray,
+    solar_zenith: xr.DataArray,
+    illumination_angle: xr.DataArray,
+    skyview: xr.DataArray | None = None,
+    altitude: xr.DataArray | None = None,
 ) -> dict[str, xr.DataArray]:
-    sqrt_grain_radius = np.sqrt(grain_radius).astype("float32")
-    dust_mass_fraction = (dust_ppm / np.float32(1_000_000.0)).astype("float32")
-    return {
-        SQRT_GRAIN_RADIUS_UM: sqrt_grain_radius,
-        DUST_MASS_FRACTION: dust_mass_fraction,
-        SOOT_MASS_FRACTION: xr.zeros_like(grain_radius, dtype=np.float32),
+    inputs = {
+        SOLAR_ZENITH: solar_zenith,
+        ILLUMINATION_ANGLE: illumination_angle,
+        LAP_CONCENTRATION: lap_concentration,
+        SQRT_GRAIN_RADIUS: np.sqrt(grain_radius).astype("float32"),
     }
+    if SKYVIEW in table.dimensions:
+        if skyview is None:
+            raise ValueError(
+                "lookup includes a 'skyview' axis, so skyview must be provided"
+            )
+        prepared_skyview = prepare_aligned_layer(
+            skyview,
+            grain_radius,
+            label="skyview",
+            target_label="results['grain_radius']",
+        )
+        require_float32(prepared_skyview, "skyview")
+        require_values_in_range(
+            prepared_skyview,
+            "skyview",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        inputs[SKYVIEW] = prepared_skyview
+
+    if ALTITUDE in table.dimensions:
+        if altitude is None:
+            raise ValueError(
+                "lookup includes an 'altitude' axis, so altitude must be provided"
+            )
+        prepared_altitude = prepare_aligned_layer(
+            altitude,
+            grain_radius,
+            label="altitude",
+            target_label="results['grain_radius']",
+        )
+        require_float32(prepared_altitude, "altitude")
+        require_values_in_range(prepared_altitude, "altitude")
+        _require_units(
+            prepared_altitude,
+            allowed=_ALTITUDE_KM_UNITS,
+            label="altitude",
+            convention="physical altitude in kilometres",
+        )
+        inputs[ALTITUDE] = prepared_altitude
+    return inputs
 
 
 def _evaluate(
@@ -321,6 +382,15 @@ def _evaluate(
     return interpolate_lookup(table, inputs).transpose(*target.dims).astype("float32")
 
 
+def _require_zero_lap(table: LookupTable) -> None:
+    axis = table.axes[table.dimensions.index(LAP_CONCENTRATION)]
+    if not (axis[0] <= 0.0 <= axis[-1]):
+        raise ValueError(
+            "albedo lookup lap_concentration axis must include zero for "
+            "clean-snow products"
+        )
+
+
 def _with_product_metadata(
     values: xr.DataArray,
     *,
@@ -328,37 +398,31 @@ def _with_product_metadata(
     long_name: str,
     units: str,
     geometry: str,
+    lap_evaluation: str,
     table: LookupTable,
 ) -> xr.DataArray:
     product = values.astype("float32").rename(name)
     attrs: dict[str, object] = {
         "long_name": long_name,
         "units": units,
-        "model": "SPIReS normalized LUT linear interpolation",
+        "model": "SPIReS canonical LUT linear interpolation",
         "lookup_variable": table.name,
         "lookup_axis_ranges": lookup_axis_ranges(table),
-        "grain_size_interpretation": "effective snow grain radius",
-        "grain_size_units": "um",
-        "grain_size_transform": "sqrt(radius_um)",
-        "dust_input_units": "ppm",
-        "dust_transform": "dust_ppm / 1000000",
-        "soot_mass_fraction": 0.0,
+        "grain_radius_interpretation": "effective snow grain radius",
+        "grain_radius_units": "um",
+        "grain_radius_transform": "sqrt(radius_um)",
+        "lap_input_units": "ppm",
+        "lap_type": "dust",
+        "lap_evaluation": lap_evaluation,
         "geometry": geometry,
     }
-    if "source" in table.provenance:
-        attrs["lookup_source"] = table.provenance["source"]
-    if "source_checksum_sha256" in table.provenance:
-        attrs["lookup_source_checksum_sha256"] = table.provenance[
-            "source_checksum_sha256"
-        ]
-    for name in ("atmosphere_model", "dust_model"):
-        if name in table.provenance:
-            attrs[name] = table.provenance[name]
+    for key, value in table.provenance.items():
+        attrs[f"lookup_{key}"] = value
     product.attrs = attrs
     return product
 
 
-def _validate_units(
+def _require_units(
     data: xr.DataArray,
     *,
     allowed: set[str],
@@ -366,8 +430,6 @@ def _validate_units(
     convention: str,
 ) -> None:
     declared = data.attrs.get("units")
-    if declared is None or declared == "":
-        return
     if not isinstance(declared, str) or declared.strip().casefold() not in allowed:
         raise ValueError(
             f"{label} units must identify {convention}; got {declared!r}"

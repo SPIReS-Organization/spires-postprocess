@@ -1,13 +1,20 @@
-"""Normalized lookup-table validation and xarray-aware interpolation."""
+"""Canonical lookup-table loading, validation, and interpolation."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
+from spires_contract import (
+    ContractError,
+    canonical_lut_unit,
+    validate_albedo_lut,
+)
 import xarray as xr
 
 from spires_postprocess._xarray_validation import (
@@ -16,33 +23,41 @@ from spires_postprocess._xarray_validation import (
 )
 
 
-COSINE_SOLAR_ZENITH = "cosine_solar_zenith"
-COSINE_ILLUMINATION = "cosine_illumination"
-SQRT_GRAIN_RADIUS_UM = "sqrt_grain_radius_um"
-DUST_MASS_FRACTION = "dust_mass_fraction"
-SOOT_MASS_FRACTION = "soot_mass_fraction"
+SOLAR_ZENITH = "solar_zenith"
+ILLUMINATION_ANGLE = "illumination_angle"
+LAP_CONCENTRATION = "lap_concentration"
+SQRT_GRAIN_RADIUS = "sqrt_grain_radius"
+SKYVIEW = "skyview"
+ALTITUDE = "altitude"
 
 ALBEDO_ROUNDOFF_TOLERANCE = 1.0e-6
+CANONICAL_LOOKUP_DIMS = (
+    SOLAR_ZENITH,
+    ILLUMINATION_ANGLE,
+    LAP_CONCENTRATION,
+    SQRT_GRAIN_RADIUS,
+)
+_NETCDF_SUFFIXES = {".nc", ".cdf", ".netcdf"}
+_VARIABLE_UNITS = {
+    "albedo": "1",
+    "delta_vis": "1",
+    "radiative_forcing": "W m-2",
+}
 _PROVENANCE_ATTRS = (
     "source",
+    "source_filename",
+    "source_sha256",
     "source_checksum_sha256",
+    "status",
     "atmosphere_model",
     "dust_model",
+    "lap_type",
 )
 
 
 @dataclass(frozen=True)
-class LookupSchema:
-    """Required normalized layout and units for one lookup variable."""
-
-    dimensions: tuple[str, ...]
-    units: str
-    albedo: bool = False
-
-
-@dataclass(frozen=True)
 class LookupTable:
-    """Validated lookup data with explicit axis order."""
+    """One validated canonical lookup variable with explicit axis order."""
 
     name: str
     dimensions: tuple[str, ...]
@@ -52,57 +67,66 @@ class LookupTable:
     provenance: Mapping[str, object]
 
 
-_ALBEDO_DIMS = (
-    COSINE_SOLAR_ZENITH,
-    COSINE_ILLUMINATION,
-    SQRT_GRAIN_RADIUS_UM,
-)
-_DIRTY_DIMS = (
-    *_ALBEDO_DIMS,
-    DUST_MASS_FRACTION,
-    SOOT_MASS_FRACTION,
-)
-LOOKUP_SCHEMAS: Mapping[str, LookupSchema] = {
-    "clean_albedo": LookupSchema(_ALBEDO_DIMS, "1", albedo=True),
-    "dirty_albedo": LookupSchema(_DIRTY_DIMS, "1", albedo=True),
-    "delta_vis": LookupSchema(_DIRTY_DIMS, "1"),
-    "radiative_forcing": LookupSchema(_DIRTY_DIMS, "W m-2"),
-}
+def load_albedo_lookup(source: xr.Dataset | str | Path) -> xr.Dataset:
+    """Load and validate a canonical NetCDF albedo lookup dataset."""
+    lookup = _load_netcdf_lookup(source, label="albedo lookup")
+    validate_lookup_table(lookup, "albedo")
+    return lookup
+
+
+def load_forcing_lookup(source: xr.Dataset | str | Path) -> xr.Dataset:
+    """Load and validate a canonical NetCDF delta-VIS/RF lookup dataset."""
+    lookup = _load_netcdf_lookup(source, label="delta-VIS/RF lookup")
+    present = [
+        name for name in ("delta_vis", "radiative_forcing") if name in lookup
+    ]
+    if not present:
+        raise ValueError(
+            "delta-VIS/RF lookup must contain 'delta_vis', "
+            "'radiative_forcing', or both"
+        )
+    for variable in present:
+        validate_lookup_table(lookup, variable)
+    return lookup
 
 
 def validate_lookup_table(lookup: xr.Dataset, variable: str) -> LookupTable:
-    """Validate and normalize one required variable from a lookup dataset.
-
-    Only ``variable`` and its coordinates are inspected. Malformed unrelated
-    variables in a combined dataset do not affect this validation call. Lookup
-    data variables must be float32; coordinate dtypes remain unconstrained apart
-    from being real numeric.
-    """
+    """Validate one canonical albedo, delta-VIS, or RF lookup variable."""
     if not isinstance(lookup, xr.Dataset):
         raise TypeError("lookup must be an xarray.Dataset")
-    if variable not in LOOKUP_SCHEMAS:
+    if variable not in _VARIABLE_UNITS:
         raise ValueError(f"unsupported lookup variable {variable!r}")
     if variable not in lookup.data_vars:
         raise ValueError(f"lookup is missing required variable {variable!r}")
 
-    schema = LOOKUP_SCHEMAS[variable]
     data = lookup[variable]
-    if data.dims != schema.dimensions:
+    if variable == "albedo":
+        validate_albedo_lut(lookup, expected_lap_type="dust")
+        dimensions = tuple(data.dims)
+    else:
+        dimensions = CANONICAL_LOOKUP_DIMS
+        if data.dims != dimensions:
+            raise ValueError(
+                f"lookup variable {variable!r} must have dimensions "
+                f"{dimensions} in that order; got {data.dims}"
+            )
+        _validate_canonical_coordinates(lookup, dimensions)
+
+    units = _VARIABLE_UNITS[variable]
+    if data.attrs.get("units") != units:
         raise ValueError(
-            f"lookup variable {variable!r} must have dimensions "
-            f"{schema.dimensions} in that order; got {data.dims}"
-        )
-    if data.attrs.get("units") != schema.units:
-        raise ValueError(
-            f"lookup variable {variable!r} units must be {schema.units!r}; "
+            f"lookup variable {variable!r} units must be {units!r}; "
             f"got {data.attrs.get('units')!r}"
         )
+    require_float32(data, f"lookup variable {variable!r}")
 
     axes = tuple(
         _validated_coordinate(lookup, dimension, variable=variable)
-        for dimension in schema.dimensions
+        for dimension in dimensions
     )
-    values = _validated_table_values(data, variable=variable)
+    values = np.ascontiguousarray(np.asarray(data.data))
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"lookup variable {variable!r} must be entirely finite")
     expected_shape = tuple(axis.size for axis in axes)
     if values.shape != expected_shape:
         raise ValueError(
@@ -110,23 +134,15 @@ def validate_lookup_table(lookup: xr.Dataset, variable: str) -> LookupTable:
             f"{expected_shape}; got {values.shape}"
         )
 
-    if schema.albedo and (
+    if variable in {"albedo", "delta_vis"} and (
         np.any(values < -ALBEDO_ROUNDOFF_TOLERANCE)
         or np.any(values > 1.0 + ALBEDO_ROUNDOFF_TOLERANCE)
     ):
         raise ValueError(
-            f"lookup variable {variable!r} contains albedo outside "
+            f"lookup variable {variable!r} contains values outside "
             f"[-{ALBEDO_ROUNDOFF_TOLERANCE:g}, "
             f"{1.0 + ALBEDO_ROUNDOFF_TOLERANCE:g}]"
         )
-
-    if SOOT_MASS_FRACTION in schema.dimensions:
-        soot_axis = axes[schema.dimensions.index(SOOT_MASS_FRACTION)]
-        if not (soot_axis[0] <= 0.0 <= soot_axis[-1]):
-            raise ValueError(
-                f"lookup variable {variable!r} soot_mass_fraction coordinate "
-                "must contain zero within its domain"
-            )
 
     provenance = {
         name: lookup.attrs[name]
@@ -135,10 +151,10 @@ def validate_lookup_table(lookup: xr.Dataset, variable: str) -> LookupTable:
     }
     return LookupTable(
         name=variable,
-        dimensions=schema.dimensions,
+        dimensions=dimensions,
         axes=axes,
         values=values,
-        units=schema.units,
+        units=units,
         provenance=provenance,
     )
 
@@ -148,11 +164,14 @@ def interpolate_lookup(
     inputs: Mapping[str, xr.DataArray],
 ) -> xr.DataArray:
     """Linearly interpolate a validated table over broadcast scene arrays."""
-    missing = [dimension for dimension in table.dimensions if dimension not in inputs]
+    missing = [
+        dimension for dimension in table.dimensions if dimension not in inputs
+    ]
     if missing:
         raise ValueError(
-            f"lookup interpolation for {table.name!r} is missing input(s): {missing}"
+            f"inputs for lookup variable {table.name!r} are missing {missing}"
         )
+
     ordered = []
     for dimension in table.dimensions:
         values = inputs[dimension]
@@ -197,6 +216,54 @@ def lookup_axis_ranges(table: LookupTable) -> str:
     return json.dumps(ranges, separators=(",", ":"), sort_keys=True)
 
 
+def _load_netcdf_lookup(
+    source: xr.Dataset | str | Path,
+    *,
+    label: str,
+) -> xr.Dataset:
+    if isinstance(source, xr.Dataset):
+        return source
+    if not isinstance(source, (str, Path)):
+        raise TypeError(f"{label} must be an xarray.Dataset or NetCDF path")
+
+    path = Path(source).expanduser()
+    if path.suffix.lower() not in _NETCDF_SUFFIXES:
+        raise ValueError(
+            f"{label} must use NetCDF; runtime MATLAB LUT support is disabled"
+        )
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} does not exist: {path}")
+
+    with xr.open_dataset(path) as opened:
+        lookup = opened.load()
+    attrs = dict(lookup.attrs)
+    attrs.setdefault("source_filename", path.name)
+    attrs.setdefault("source_sha256", _sha256(path))
+    lookup.attrs = attrs
+    return lookup
+
+
+def _validate_canonical_coordinates(
+    lookup: xr.Dataset,
+    dimensions: tuple[str, ...],
+) -> None:
+    for dimension in dimensions:
+        if dimension not in lookup.coords:
+            raise ValueError(f"lookup is missing coordinate {dimension!r}")
+        coordinate = lookup.coords[dimension]
+        try:
+            canonical_lut_unit(dimension, coordinate.attrs.get("units"))
+        except ContractError as exc:
+            raise ValueError(str(exc)) from exc
+
+    lap_type = lookup.coords[LAP_CONCENTRATION].attrs.get("lap_type")
+    if lap_type != "dust":
+        raise ValueError(
+            "lookup coordinate 'lap_concentration' must declare "
+            "lap_type='dust'"
+        )
+
+
 def _validated_coordinate(
     lookup: xr.Dataset,
     dimension: str,
@@ -228,13 +295,9 @@ def _validated_coordinate(
     return np.ascontiguousarray(values)
 
 
-def _validated_table_values(data: xr.DataArray, *, variable: str) -> np.ndarray:
-    require_float32(data, f"lookup variable {variable!r}")
-    # Retain canonical float32 storage. RegularGridInterpolator promotes its
-    # coordinate/weight arithmetic and returned values to float64 as needed;
-    # eagerly doubling the complete LUT here adds memory without recovering any
-    # precision that was not present in the validated float32 source values.
-    values = np.ascontiguousarray(np.asarray(data.data))
-    if not np.all(np.isfinite(values)):
-        raise ValueError(f"lookup variable {variable!r} must be entirely finite")
-    return values
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()

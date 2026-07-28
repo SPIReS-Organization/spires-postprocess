@@ -149,20 +149,20 @@ def apply_snow_fraction_adjustments(
     canopy_source: str | None = None,
     ice_source: str | None = None,
 ) -> xr.Dataset:
-    """Add requested canopy- and ice-adjusted fSCA layers to a dataset.
+    """Add requested canopy- and ice-adjusted snow-fraction layers.
 
-    Supplying ``canopy_fraction`` requests ``canopy_adjusted_fsca``. Supplying
-    ``ice_fraction`` requests ``ice_adjusted_fsca``. When both are supplied, the
-    ice-adjusted layer is calculated directly from the original ``fsca`` using
+    Supplying ``canopy_fraction`` requests ``canopy_adjusted_fsnow``. Supplying
+    ``ice_fraction`` requests ``ice_adjusted_fsnow``. When both are supplied, the
+    ice-adjusted layer is calculated directly from the original ``fsnow`` using
     shade, viewable canopy, and ice together, matching the SPIRES 2025.0.1 daily
-    calculation. The input dataset and its original ``fsca``/``fshade`` variables
+    calculation. The input dataset and its original ``fsnow``/``fshade`` variables
     are not modified. Required results and ancillary inputs must already be
     float32 and within their documented physical ranges.
     """
     if canopy_fraction is None and ice_fraction is None:
         raise ValueError("provide canopy_fraction, ice_fraction, or both")
 
-    fsca, fshade = _validated_results(results)
+    fsnow, fshade = _validated_results(results)
     adjusted_results = results.copy()
     viewable_canopy = None
 
@@ -182,7 +182,7 @@ def apply_snow_fraction_adjustments(
         viewable_canopy_attrs = dict(viewable_canopy.attrs)
         viewable_canopy = _prepare_fraction_layer(
             viewable_canopy,
-            fsca,
+            fsnow,
             name="viewable_canopy_fraction",
         )
         viewable_canopy.attrs = viewable_canopy_attrs
@@ -190,12 +190,12 @@ def apply_snow_fraction_adjustments(
             min=0.0,
             max=_OBSCURATION_LIMIT,
         )
-        canopy_adjusted = (fsca / (1.0 - canopy_obscuration)).clip(
+        canopy_adjusted = (fsnow / (1.0 - canopy_obscuration)).clip(
             min=0.0,
             max=1.0,
         )
         canopy_adjusted = canopy_adjusted.astype("float32").rename(
-            "canopy_adjusted_fsca"
+            "canopy_adjusted_fsnow"
         )
         canopy_adjusted.attrs = {
             "long_name": "Snow fraction adjusted for shade and canopy obstruction",
@@ -213,10 +213,10 @@ def apply_snow_fraction_adjustments(
             ),
             "obscuration_upper_bound": _OBSCURATION_LIMIT,
         }
-        adjusted_results["canopy_adjusted_fsca"] = canopy_adjusted
+        adjusted_results["canopy_adjusted_fsnow"] = canopy_adjusted
 
     if ice_fraction is not None:
-        ice = _prepare_fraction_layer(ice_fraction, fsca, name="ice_fraction")
+        ice = _prepare_fraction_layer(ice_fraction, fsnow, name="ice_fraction")
         total_obscuration = fshade + ice
         if viewable_canopy is not None:
             total_obscuration = total_obscuration + viewable_canopy
@@ -224,12 +224,12 @@ def apply_snow_fraction_adjustments(
             min=0.0,
             max=_OBSCURATION_LIMIT,
         )
-        ice_adjusted = (fsca / (1.0 - total_obscuration)).clip(
+        ice_adjusted = (fsnow / (1.0 - total_obscuration)).clip(
             min=0.0,
             max=1.0,
         )
         ice_adjusted = xr.where(ice_adjusted < ice, ice, ice_adjusted)
-        ice_adjusted = ice_adjusted.astype("float32").rename("ice_adjusted_fsca")
+        ice_adjusted = ice_adjusted.astype("float32").rename("ice_adjusted_fsnow")
         ice_adjusted_attrs = {
             "long_name": "Snow fraction adjusted for shade, canopy, and glacier ice",
             "units": "1",
@@ -258,7 +258,7 @@ def apply_snow_fraction_adjustments(
                 average_horizontal_crown_radius=average_horizontal_crown_radius,
             )
         ice_adjusted.attrs = ice_adjusted_attrs
-        adjusted_results["ice_adjusted_fsca"] = ice_adjusted
+        adjusted_results["ice_adjusted_fsnow"] = ice_adjusted
 
     return adjusted_results
 
@@ -266,18 +266,18 @@ def apply_snow_fraction_adjustments(
 def _validated_results(results: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
     if not isinstance(results, xr.Dataset):
         raise TypeError("results must be an xarray.Dataset")
-    missing = [name for name in ("fsca", "fshade") if name not in results]
+    missing = [name for name in ("fsnow", "fshade") if name not in results]
     if missing:
         raise ValueError(f"results is missing required variable(s): {missing}")
 
-    fsca = results["fsca"]
+    fsnow = results["fsnow"]
     fshade = results["fshade"]
-    validate_target_layout(fsca, "results['fsca']")
-    require_float32(fsca, "results['fsca']")
+    validate_target_layout(fsnow, "results['fsnow']")
+    require_float32(fsnow, "results['fsnow']")
     require_float32(fshade, "results['fshade']")
     require_values_in_range(
-        fsca,
-        "results['fsca']",
+        fsnow,
+        "results['fsnow']",
         minimum=0.0,
         maximum=1.0,
     )
@@ -287,18 +287,18 @@ def _validated_results(results: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]
         minimum=0.0,
         maximum=1.0,
     )
-    if fshade.dims != fsca.dims:
+    if fshade.dims != fsnow.dims:
         raise ValueError(
-            "results['fshade'] must have the same dimensions as results['fsca']"
+            "results['fshade'] must have the same dimensions as results['fsnow']"
         )
     require_matching_coords(
         fshade,
-        fsca,
-        fsca.dims,
+        fsnow,
+        fsnow.dims,
         label="results['fshade']",
-        target_label="results['fsca']",
+        target_label="results['fsnow']",
     )
-    return fsca, fshade
+    return fsnow, fshade
 
 
 def _prepare_fraction_layer(

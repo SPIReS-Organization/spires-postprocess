@@ -67,13 +67,16 @@ def require_matching_coords(
     label: str,
     target_label: str = "target",
 ) -> None:
-    """Require identical xarray coordinates on every named dimension."""
+    """Require exact coordinate values on every named dimension."""
     for dimension in dimensions:
         if dimension not in data.coords:
             raise ValueError(f"{label} is missing coordinate {dimension!r}")
         if dimension not in target.coords:
             raise ValueError(f"{target_label} is missing coordinate {dimension!r}")
-        if not data.coords[dimension].equals(target.coords[dimension]):
+        if not np.array_equal(
+            data.coords[dimension].values,
+            target.coords[dimension].values,
+        ):
             raise ValueError(
                 f"{label} coordinate {dimension!r} does not match {target_label}"
             )

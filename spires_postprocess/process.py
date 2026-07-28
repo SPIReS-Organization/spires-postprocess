@@ -32,6 +32,12 @@ _BASE_RESULT_NAMES = (
     "lap_concentration",
     "grain_radius",
 )
+_ALBEDO_RESULT_NAMES = (
+    "albedo_clean_flat",
+    "albedo_dirty_flat",
+    "albedo_clean_terrain_corrected",
+    "albedo_dirty_terrain_corrected",
+)
 _METRE_UNITS = {"m", "meter", "meters", "metre", "metres"}
 _KILOMETRE_UNITS = {"km", "kilometer", "kilometers", "kilometre", "kilometres"}
 
@@ -142,15 +148,37 @@ def process(
                 "albedo_lookup is required when calculate_albedo=True"
             )
         lookup = load_albedo_lookup(albedo_lookup)
-        ancillary = _require_ancillary(data)
-        skyview = (
-            _require_variable(ancillary, SKYVIEW, owner="data.ancillary")
-            if SKYVIEW in lookup["albedo"].dims
-            else None
-        )
+        skyview = None
+        skyview_source = "not_used"
+        skyview_default_applied = False
+        if SKYVIEW in lookup["albedo"].dims:
+            supplied_skyview = (
+                None
+                if data.ancillary is None
+                else data.ancillary.get(SKYVIEW)
+            )
+            if supplied_skyview is None:
+                skyview = xr.ones_like(
+                    updated["grain_radius"],
+                    dtype=np.float32,
+                ).rename(SKYVIEW)
+                skyview.attrs = {
+                    "long_name": "Default unobstructed sky-view fraction",
+                    "units": "1",
+                    "source": "spires_postprocess_default_open_sky",
+                }
+                skyview_source = "default_open_sky"
+                skyview_default_applied = True
+            else:
+                skyview = supplied_skyview
+                skyview_source = "data.ancillary.skyview"
         altitude = (
             _altitude_km(
-                _require_variable(ancillary, "dem", owner="data.ancillary")
+                _require_variable(
+                    _require_ancillary(data),
+                    "dem",
+                    owner="data.ancillary",
+                )
             )
             if ALTITUDE in lookup["albedo"].dims
             else None
@@ -171,6 +199,16 @@ def process(
             skyview=skyview,
             altitude=altitude,
         )
+        if SKYVIEW in lookup["albedo"].dims:
+            for name in _ALBEDO_RESULT_NAMES:
+                attrs = dict(updated[name].attrs)
+                attrs.update(
+                    skyview_source=skyview_source,
+                    skyview_default_applied=int(skyview_default_applied),
+                )
+                if skyview_default_applied:
+                    attrs["skyview_default_value"] = 1.0
+                updated[name].attrs = attrs
 
     if calculate_delta_vis or calculate_radiative_forcing:
         if forcing_lookup is None:
@@ -197,6 +235,9 @@ def process(
                 lookup=lookup,
             )
 
+    updated = updated.assign_coords(
+        {name: coordinate for name, coordinate in original_results.coords.items()}
+    )
     _require_unchanged_base_results(original_results, updated)
     validate_results(updated, scene=data.scene)
     return data.assign_results(updated)

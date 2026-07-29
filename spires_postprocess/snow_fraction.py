@@ -85,21 +85,23 @@ def calculate_viewable_canopy_fraction(
             minimum=0.0,
             maximum=360.0,
         )
+        normalized_sensor_azimuth = xr.where(
+            np.isfinite(sensor_azimuth),
+            sensor_azimuth % np.float32(360.0),
+            np.nan,
+        ).astype("float32")
         sensor_azimuth_layer = _prepare_geometry_layer(
-            sensor_azimuth,
+            normalized_sensor_azimuth,
             sensor_zenith,
             name="sensor_azimuth",
             minimum=0.0,
             maximum=360.0,
         )
 
-        theta_s_prime = np.deg2rad(
-            90.0
-            - np.rad2deg(
-                np.arctan(
-                    crown_ratio * np.tan(np.deg2rad(90.0 - slope_layer))
-                )
-            )
+        slope_rad = np.deg2rad(slope_layer)
+        theta_s_prime = np.arctan2(
+            np.sin(slope_rad),
+            crown_ratio * np.cos(slope_rad),
         )
         phi_v_prime = np.deg2rad(sensor_azimuth_layer - aspect_layer)
         denominator = (
@@ -130,6 +132,7 @@ def calculate_viewable_canopy_fraction(
         "average_horizontal_crown_radius": average_horizontal_crown_radius,
         "terrain_geometry_used": int(terrain_geometry_used),
         "azimuth_convention": "degrees clockwise from north",
+        "sensor_azimuth_normalization": "finite values modulo 360",
         "supported_result_dims": ",".join(target_dims),
     }
     return adjusted

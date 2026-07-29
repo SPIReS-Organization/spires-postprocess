@@ -51,10 +51,12 @@ Required object fields are:
 | Snow albedo | `results.grain_radius`, `results.lap_concentration`, `scene.cosine_solar_zenith`, `scene.cosine_illumination`, and a canonical albedo LUT |
 | Delta-VIS / radiative forcing | `results.grain_radius`, `results.lap_concentration`, `scene.cosine_solar_zenith`, and a canonical DV/RF LUT |
 
-An albedo LUT with a `skyview` axis additionally requires
-`ancillary.skyview`. An `altitude` axis requires `ancillary.dem` with explicit
-metre or kilometre units; the wrapper converts declared metre values to
-kilometres.
+For an albedo LUT with a `skyview` axis, the wrapper uses
+`ancillary.skyview` when supplied. If it is absent, the wrapper explicitly
+defaults to `skyview=1.0`, representing unobstructed open sky, and records that
+fallback in the albedo product metadata. An `altitude` axis still requires
+`ancillary.dem` with explicit metre or kilometre units; the wrapper converts
+declared metre values to kilometres.
 
 ## Canopy and ice adjustments
 
@@ -84,6 +86,11 @@ canopy_adjusted_fsnow = clip(fsnow / (1 - O_canopy), 0, 1)
 O_ice = clip(fshade + viewable_canopy_fraction + ice_fraction, 0, 0.99)
 ice_adjusted_fsnow = max(clip(fsnow / (1 - O_ice), 0, 1), ice_fraction)
 ```
+
+For terrain-aware canopy correction, finite sensor azimuth values are
+normalized modulo 360 before use. This accepts both the signed `[-180, 180]`
+convention used by VIIRS/MODIS source products and an unsigned `[0, 360)`
+representation.
 
 Results may use `(y, x)` or `(time, y, x)` dimensions in the lower-level API.
 Static ancillary layers broadcast over time. Inputs must already be float32,

@@ -220,7 +220,7 @@ from spires_postprocess import canopy_cover_fraction, cloud_mask_from_valid, pro
 from spires_postprocess.treefill_client import http_inpainter
 
 canopy = rioxarray.open_rasterio("/data/canopy/ucsb_1m_binary_canopy_cover.tif")
-data.ancillary["canopy_fraction"] = canopy_cover_fraction(canopy, data.results["fsnow"])
+data.ancillary["canopy_fraction"] = canopy_cover_fraction(canopy, data.results["fsnow"])  # percent=True for 0-100 rasters
 out = process(
     data,
     apply_canopy_correction=True, canopy_correction_policy="nadir_full_shade", sensor="hls_l30",

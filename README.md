@@ -207,3 +207,35 @@ Interpolation is linear with no extrapolation. Boundary coordinates are valid;
 missing or out-of-domain inputs produce NaN only at affected pixels. All
 derived scientific outputs are float32, and same-named derived products are
 deterministically replaced without changing base inversion results.
+
+## Landsat / Sentinel-2 / HLS product chain
+
+Near-nadir sensors use the `nadir_full_shade` canopy policy (viewable canopy equals
+canopy cover; no sensor or terrain geometry). The chain adds layers to `results`
+and never modifies the four base variables.
+
+```python
+import rioxarray
+from spires_postprocess import canopy_cover_fraction, cloud_mask_from_valid, process
+from spires_postprocess.treefill_client import http_inpainter
+
+canopy = rioxarray.open_rasterio("/data/canopy/ucsb_1m_binary_canopy_cover.tif")
+data.ancillary["canopy_fraction"] = canopy_cover_fraction(canopy, data.results["fsnow"])
+out = process(
+    data,
+    apply_canopy_correction=True, canopy_correction_policy="nadir_full_shade", sensor="hls_l30",
+    apply_shade_adjustment=True,
+    tree_cover_threshold=0.10,
+    cloud_mask=cloud_mask_from_valid(data.scene["valid"], data.results["fsnow"]),
+    land_water_directory="/data/watermask",
+    treefill_inpainter=http_inpainter("http://localhost:18010"),  # optional LaMa fill
+    gate_products=True,
+    product_fsnow_variable="canopy_adjusted_fsnow",
+)
+```
+
+Output layers: `canopy_adjusted_fsnow`, `shade_adjusted_fsnow`, `*_treefilled` (when an
+inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration_product`
+(gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`, `tree_mask`,
+`shade_saturated_mask`. Water is a companion mask applied at the gate, never a NaN
+inside the chain; a missing land/water tile is an error, not a silent pass.

@@ -63,3 +63,114 @@ def _require_plane(layer: xr.DataArray, target: xr.DataArray, label: str) -> Non
     require_matching_coords(
         layer, target, ("y", "x"), label=label, target_label="results"
     )
+
+
+def canopy_cover_fraction(
+    canopy_raster: xr.DataArray,
+    target: xr.DataArray,
+) -> xr.DataArray:
+    """Resample a binary or percent canopy raster to a cover fraction on ``target``.
+
+    The raster is clipped to the target bounds plus a 100 m buffer before
+    average-resampling so edge pixels get full averaging support. Percent
+    rasters (finite maximum above 1) are divided by 100; the raster's declared
+    nodata becomes NaN and is excluded from the average.
+    """
+    import rioxarray  # noqa: F401  registers the .rio accessor
+    from rasterio.enums import Resampling
+    from rioxarray.exceptions import NoDataInBounds
+
+    validate_target_layout(target, "target")
+    if target.dims != ("y", "x"):
+        raise ValueError("target must have dimensions ('y', 'x')")
+    if target.rio.crs is None:
+        raise ValueError("target must carry a CRS (use .rio.write_crs)")
+    if not isinstance(canopy_raster, xr.DataArray):
+        raise TypeError("canopy_raster must be an xarray.DataArray")
+    raster = canopy_raster.squeeze(drop=True)
+    if raster.dims != ("y", "x"):
+        raise ValueError(
+            f"canopy_raster must reduce to dimensions ('y', 'x'); got {raster.dims}"
+        )
+    if raster.rio.crs is None:
+        raise ValueError("canopy_raster must carry a CRS")
+
+    minx, miny, maxx, maxy = target.rio.transform_bounds(raster.rio.crs)
+    buffer = (
+        CANOPY_EDGE_BUFFER_M / _METRES_PER_DEGREE
+        if raster.rio.crs.is_geographic
+        else CANOPY_EDGE_BUFFER_M
+    )
+    try:
+        window = raster.rio.clip_box(
+            minx - buffer, miny - buffer, maxx + buffer, maxy + buffer
+        )
+    except NoDataInBounds as error:
+        raise ValueError("canopy_raster does not overlap the target grid") from error
+
+    fraction = _canopy_as_fraction(window)
+    matched = fraction.rio.reproject_match(
+        target, resampling=Resampling.average, nodata=np.nan
+    )
+    out = matched.clip(0.0, 1.0).astype("float32")
+    out = xr.DataArray(
+        out.values,
+        dims=("y", "x"),
+        coords={"y": target["y"], "x": target["x"]},
+        name="canopy_fraction",
+    )
+    out.attrs = {
+        "long_name": "Canopy cover fraction",
+        "units": "1",
+        "source": str(canopy_raster.attrs.get("source", "canopy_raster")),
+        "resampling": "average",
+        "edge_buffer_m": CANOPY_EDGE_BUFFER_M,
+    }
+    return out
+
+
+def _canopy_as_fraction(window: xr.DataArray) -> xr.DataArray:
+    values = window.astype("float32")
+    nodata = window.rio.nodata
+    if nodata is not None:
+        values = values.where(window != nodata)
+    finite_max = float(values.max(skipna=True))
+    if np.isfinite(finite_max) and finite_max > 1.0:
+        values = values.where(values <= 100.0) / np.float32(100.0)
+    values = values.rio.write_crs(window.rio.crs)
+    return values.rio.write_nodata(np.nan, encoded=False)
+
+
+def tree_mask(
+    cover_fraction: xr.DataArray,
+    *,
+    threshold: float = TREE_COVER_THRESHOLD,
+    dilate_cells: int = TREE_DILATE_CELLS,
+) -> xr.DataArray:
+    """Pixels with cover above ``threshold``, dilated by ``dilate_cells``.
+
+    NaN cover is treated as no tree. Dilation uses a full ``(2k+1)**2`` square.
+    """
+    validate_target_layout(cover_fraction, "cover_fraction")
+    if cover_fraction.dims != ("y", "x"):
+        raise ValueError("cover_fraction must have dimensions ('y', 'x')")
+    if dilate_cells < 0:
+        raise ValueError("dilate_cells must be >= 0")
+    core = np.asarray(cover_fraction.values > threshold, dtype=bool)
+    if dilate_cells > 0:
+        size = 2 * dilate_cells + 1
+        core = ndimage.binary_dilation(core, structure=np.ones((size, size), dtype=bool))
+    mask = xr.DataArray(
+        core,
+        dims=("y", "x"),
+        coords={"y": cover_fraction["y"], "x": cover_fraction["x"]},
+        name="tree_mask",
+    )
+    mask.attrs = {
+        "long_name": "Tree mask from canopy cover (True = excluded)",
+        "cover_threshold": float(threshold),
+        "comparison": "strictly_greater_than",
+        "dilate_cells": int(dilate_cells),
+        "source": str(cover_fraction.attrs.get("source", "canopy_fraction")),
+    }
+    return mask

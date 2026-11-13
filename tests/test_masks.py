@@ -37,3 +37,67 @@ def test_mask_to_uint8_keeps_coords_and_attrs(grid):
     assert out.attrs["long_name"] == "x"
     assert out.attrs["flag_values"] == "0,1"
     assert out.name == "m"
+
+
+from tests.conftest import binary_canopy_raster
+from spires_postprocess.masks import canopy_cover_fraction, tree_mask
+
+
+def test_canopy_cover_fraction_averages_binary_raster(grid):
+    raster = binary_canopy_raster(fill_columns=slice(0, 2), striped_columns=slice(2, 3))
+    frac = canopy_cover_fraction(raster, grid)
+    assert frac.dtype == np.float32
+    assert frac.dims == ("y", "x")
+    assert frac.name == "canopy_fraction"
+    np.testing.assert_allclose(frac.isel(x=slice(0, 2)).values, 1.0, atol=1e-6)
+    np.testing.assert_allclose(frac.isel(x=2).values, 0.5, atol=1e-6)
+    np.testing.assert_allclose(frac.isel(x=slice(3, None)).values, 0.0, atol=1e-6)
+    np.testing.assert_array_equal(frac["x"].values, grid["x"].values)
+    np.testing.assert_array_equal(frac["y"].values, grid["y"].values)
+    assert frac.attrs["units"] == "1"
+
+
+def test_canopy_cover_fraction_accepts_percent_raster(grid):
+    raster = binary_canopy_raster(fill_columns=slice(0, 8))
+    percent = (raster.astype("uint8") * 40).astype("uint8")
+    percent.values[0, 0] = 255
+    percent = percent.rio.write_nodata(255)
+    frac = canopy_cover_fraction(percent, grid)
+    assert float(np.nanmax(frac.values)) == pytest.approx(0.4, abs=1e-6)
+    assert float(np.nanmin(frac.values)) == pytest.approx(0.4, abs=1e-6)
+
+
+def test_canopy_cover_fraction_requires_overlap(grid):
+    raster = binary_canopy_raster(fill_columns=slice(0, 8))
+    far = raster.assign_coords(x=raster["x"] + 10.0).rio.write_crs("EPSG:4326")
+    with pytest.raises(ValueError, match="overlap"):
+        canopy_cover_fraction(far, grid)
+
+
+def test_canopy_cover_fraction_requires_crs(grid):
+    raster = binary_canopy_raster(fill_columns=slice(0, 8))
+    bare = xr.DataArray(grid.values, dims=grid.dims, coords={"y": grid["y"], "x": grid["x"]})
+    with pytest.raises(ValueError, match="CRS"):
+        canopy_cover_fraction(raster, bare)
+
+
+def test_tree_mask_threshold_and_dilation(grid):
+    cover = grid.copy(data=np.zeros((8, 8), dtype=np.float32))
+    cover.values[4, 4] = 0.5
+    cover.values[0, 0] = 0.10  # exactly at threshold: not a tree
+    mask = tree_mask(cover)
+    assert mask.dtype == bool
+    assert mask.name == "tree_mask"
+    assert int(mask.sum()) == 9
+    assert bool(mask.isel(y=slice(3, 6), x=slice(3, 6)).all())
+    assert not bool(mask[0, 0])
+    assert mask.attrs["cover_threshold"] == 0.10
+    assert mask.attrs["dilate_cells"] == 1
+
+
+def test_tree_mask_without_dilation_and_nan(grid):
+    cover = grid.copy(data=np.full((8, 8), np.nan, dtype=np.float32))
+    cover.values[2, 2] = 0.9
+    mask = tree_mask(cover, threshold=0.5, dilate_cells=0)
+    assert int(mask.sum()) == 1
+    assert bool(mask[2, 2])

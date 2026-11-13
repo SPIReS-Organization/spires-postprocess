@@ -72,10 +72,10 @@ def treefill_results(
     for source_name, target_name in _FILLED_LAYERS:
         field = results[source_name]
         vmax = float(np.nanmax(np.where(hole, np.nan, field.values))) if (~hole).any() else np.nan
-        if not np.isfinite(vmax):
-            raise ValueError(f"{source_name} has no finite un-masked pixel to scale the inpainter")
-        if vmax <= 0.0:
-            vmax = 1.0
+        if not np.isfinite(vmax) or vmax <= 0.0:
+            raise ValueError(
+                f"{source_name} has no positive finite un-masked pixel to scale the inpainter"
+            )
         out[target_name] = _fill_layer(
             field, hole, inpainter, 0.0, vmax, name=target_name,
             long_name=f"{field.attrs.get('long_name', source_name)} with canopy pixels inpainted",
@@ -95,7 +95,7 @@ def _fill_layer(
     long_name: str,
     attrs: dict,
 ) -> xr.DataArray:
-    source = np.ascontiguousarray(field.values, dtype=np.float32)
+    source = np.array(field.values, dtype=np.float32, copy=True)
     filled = np.asarray(inpainter(source, hole.copy(), float(vmin), float(vmax)), dtype=np.float32)
     if filled.shape != source.shape:
         raise ValueError(

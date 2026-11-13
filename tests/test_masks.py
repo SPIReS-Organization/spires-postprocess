@@ -39,6 +39,18 @@ def test_mask_to_uint8_keeps_coords_and_attrs(grid):
     assert out.name == "m"
 
 
+def test_mask_to_uint8_drops_non_dimension_coords(grid):
+    mask = xr.DataArray(
+        np.eye(8, dtype=bool), dims=("y", "x"),
+        coords={"y": grid["y"].values, "x": grid["x"].values, "spatial_ref": 0},
+        name="m",
+    )
+    assert "spatial_ref" in mask.coords
+    out = mask_to_uint8(mask)
+    assert "spatial_ref" not in out.coords
+    np.testing.assert_array_equal(out["x"].values, grid["x"].values)
+
+
 from tests.conftest import binary_canopy_raster
 from spires_postprocess.masks import canopy_cover_fraction, tree_mask
 
@@ -62,9 +74,17 @@ def test_canopy_cover_fraction_accepts_percent_raster(grid):
     percent = (raster.astype("uint8") * 40).astype("uint8")
     percent.values[0, 0] = 255
     percent = percent.rio.write_nodata(255)
-    frac = canopy_cover_fraction(percent, grid)
+    frac = canopy_cover_fraction(percent, grid, percent=True)
     assert float(np.nanmax(frac.values)) == pytest.approx(0.4, abs=1e-6)
     assert float(np.nanmin(frac.values)) == pytest.approx(0.4, abs=1e-6)
+    assert frac.attrs["source_units"] == "percent"
+
+
+def test_canopy_cover_fraction_rejects_nonbinary_without_percent(grid):
+    raster = binary_canopy_raster(fill_columns=slice(0, 8))
+    forty = raster.copy(data=(raster.values * 40).astype("uint8"))
+    with pytest.raises(ValueError, match="binary"):
+        canopy_cover_fraction(forty, grid)
 
 
 def test_canopy_cover_fraction_requires_overlap(grid):

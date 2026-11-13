@@ -118,3 +118,33 @@ def test_gate_with_missing_product_variable_raises(data, scene, water_tile_dir):
             data, cloud_mask=cloud, land_water_directory=water_tile_dir,
             gate_products=True, product_fsnow_variable="canopy_adjusted_fsnow",
         )
+
+
+def test_tree_mask_rejects_canopy_on_shifted_grid(data):
+    canopy = data.ancillary["canopy_fraction"]
+    shifted = xr.Dataset({"canopy_fraction": canopy.assign_coords(x=canopy["x"] + 1.0)})
+    bad = SpiresData(scene=data.scene, ancillary=shifted, results=data.results)
+    with pytest.raises(ValueError, match="does not match"):
+        process(bad, tree_cover_threshold=0.10)
+
+
+def test_inplace_inpainter_cannot_mutate_base_results(data):
+    def in_place(field, mask, vmin, vmax):
+        field[mask] = np.float32(0.123)
+        return field
+
+    before = data.results.copy(deep=True)
+    out = process(
+        data, tree_cover_threshold=0.10, treefill_inpainter=in_place,
+        product_fsnow_variable="fsnow",
+    )
+    for name in ("fsnow", "fshade", "grain_radius", "lap_concentration"):
+        assert out.results[name].identical(before[name]), name
+
+
+def test_base_guard_detects_in_place_write(data):
+    snapshot = data.results.copy(deep=True)
+    updated = data.results.copy(deep=False)
+    updated["fsnow"].values[0, 0] = 0.42
+    with pytest.raises(RuntimeError, match="fsnow"):
+        _require_unchanged_base_results(snapshot, updated)

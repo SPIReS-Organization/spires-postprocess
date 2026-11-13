@@ -28,6 +28,11 @@ def test_shade_saturated_mask(results):
     assert int(mask.sum()) == 2
 
 
+def test_shade_saturated_mask_rejects_float64(results):
+    with pytest.raises(ValueError, match="float32"):
+        shade_saturated_mask(results["fshade"].astype("float64"))
+
+
 def test_shade_adjusted_fsnow_rescales_and_clips(results):
     fsnow = results["fsnow"].copy()
     fshade = results["fshade"].copy()

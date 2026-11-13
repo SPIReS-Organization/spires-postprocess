@@ -18,6 +18,7 @@ from spires_postprocess.lookup import (
     load_albedo_lookup,
     load_forcing_lookup,
 )
+from spires_postprocess._xarray_validation import require_matching_coords
 from spires_postprocess.gate import gate_products as _gate_products
 from spires_postprocess.masks import land_mask_from_tiles, mask_to_uint8, tree_mask
 from spires_postprocess.shade import shade_adjusted_fsnow, shade_saturated_mask
@@ -134,6 +135,7 @@ def process(
         return data
 
     original_results = data.results
+    base_snapshot = original_results[list(_BASE_RESULT_NAMES)].copy(deep=True)
     updated = original_results.copy(deep=False)
 
     if apply_canopy_correction or apply_ice_adjustment:
@@ -293,6 +295,18 @@ def process(
         canopy = _require_variable(
             _require_ancillary(data), "canopy_fraction", owner="data.ancillary"
         )
+        if canopy.dims != ("y", "x"):
+            raise ValueError(
+                "data.ancillary['canopy_fraction'] must have dimensions ('y', 'x'); "
+                f"got {canopy.dims}"
+            )
+        require_matching_coords(
+            canopy,
+            updated["fsnow"],
+            ("y", "x"),
+            label="data.ancillary['canopy_fraction']",
+            target_label="results",
+        )
         tree = tree_mask(canopy, threshold=tree_cover_threshold)
 
     saturated = None
@@ -304,11 +318,7 @@ def process(
 
     treefilled = False
     if treefill_inpainter is not None:
-        if product_fsnow_variable not in updated:
-            raise ValueError(
-                f"product_fsnow_variable {product_fsnow_variable!r} is not in results; "
-                "enable the adjustment that produces it"
-            )
+        _require_product_variable(updated, product_fsnow_variable)
         updated = treefill_results(
             updated,
             fsnow_variable=product_fsnow_variable,
@@ -318,12 +328,8 @@ def process(
         treefilled = True
 
     if gate_products:
-        if product_fsnow_variable not in updated:
-            raise ValueError(
-                f"product_fsnow_variable {product_fsnow_variable!r} is not in results; "
-                "enable the adjustment that produces it"
-            )
-        land = land_mask_from_tiles(
+        _require_product_variable(updated, product_fsnow_variable)
+        land =land_mask_from_tiles(
             _georeferenced(updated["fsnow"], data.scene), land_water_directory
         )
         gated = _gate_products(
@@ -349,7 +355,7 @@ def process(
     updated = updated.assign_coords(
         {name: coordinate for name, coordinate in original_results.coords.items()}
     )
-    _require_unchanged_base_results(original_results, updated)
+    _require_unchanged_base_results(base_snapshot, updated)
     validate_results(updated, scene=data.scene)
     return data.assign_results(updated)
 
@@ -369,6 +375,14 @@ def _require_variable(
     if name not in dataset:
         raise ValueError(f"{owner} is missing required variable {name!r}")
     return dataset[name]
+
+
+def _require_product_variable(updated: xr.Dataset, product_fsnow_variable: str) -> None:
+    if product_fsnow_variable not in updated:
+        raise ValueError(
+            f"product_fsnow_variable {product_fsnow_variable!r} is not in results; "
+            "enable the adjustment that produces it"
+        )
 
 
 def _georeferenced(target: xr.DataArray, scene: xr.Dataset) -> xr.DataArray:

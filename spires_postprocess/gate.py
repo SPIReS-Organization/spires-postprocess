@@ -84,5 +84,5 @@ def gate_products(
         )
         out[target_name] = product
     for name, mask in applied.items():
-        out[name] = mask_to_uint8(mask.rename(name))
+        out[name] = mask_to_uint8(aligned[name].rename(name))
     return out

@@ -88,3 +88,27 @@ def test_treefill_rejects_bad_inputs(results, tree):
 
     with pytest.raises(ValueError, match="shape"):
         treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=wrong_shape)
+
+
+def test_inplace_inpainter_cannot_mutate_base_results(results, tree):
+    def in_place(field, mask, vmin, vmax):
+        field[mask] = np.float32(0.123)
+        return field
+
+    before = {
+        name: results[name].copy(deep=True)
+        for name in ("grain_radius", "lap_concentration", "fsnow")
+    }
+    out = treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=in_place)
+    for name, expected in before.items():
+        assert results[name].identical(expected), name
+    assert np.all(out["fsnow_treefilled"].values[tree.values] == np.float32(0.123))
+
+
+def test_treefill_rejects_nonpositive_scale(results, tree):
+    zero_grain = results["grain_radius"].copy(
+        data=np.zeros(results["grain_radius"].shape, dtype=np.float32)
+    )
+    results = results.assign(grain_radius=zero_grain)
+    with pytest.raises(ValueError, match="positive"):
+        treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=constant_inpainter(0.5))

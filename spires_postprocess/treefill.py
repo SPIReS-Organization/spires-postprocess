@@ -1,9 +1,10 @@
 """Canopy treefill: inpaint retrievals under the tree mask via an injected callable.
 
-The core package never imports torch. ``Inpainter`` is any callable
-``(field, mask, vmin, vmax) -> field`` on float32 ``(y, x)`` arrays where
-``mask`` is boolean (True = hole). :mod:`spires_postprocess.treefill_client`
-provides one backed by the spipyservice LaMa HTTP service.
+The core package never imports torch or talks to a network. ``Inpainter`` is any
+callable ``(field, mask, vmin, vmax) -> field`` on float32 ``(y, x)`` arrays where
+``mask`` is boolean (True = hole); callers supply their own (a LaMa wrapper, a
+service client, a test stub). Pixels outside ``mask`` are restored from the
+source regardless of what the callable returns.
 """
 
 from __future__ import annotations

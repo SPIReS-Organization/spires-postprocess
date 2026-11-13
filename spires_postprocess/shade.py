@@ -11,13 +11,15 @@ from spires_postprocess._xarray_validation import (
     require_values_in_range,
     validate_target_layout,
 )
+from spires_postprocess.snow_fraction import _OBSCURATION_LIMIT
 
-SHADE_SATURATION = 0.99  # == snow_fraction._OBSCURATION_LIMIT
+SHADE_SATURATION = _OBSCURATION_LIMIT
 
 
 def shade_saturated_mask(fshade: xr.DataArray) -> xr.DataArray:
     """True where shade is at or above saturation; NaN shade is not saturated."""
     validate_target_layout(fshade, "fshade")
+    require_float32(fshade, "fshade")
     mask = (fshade >= np.float32(SHADE_SATURATION)).rename("shade_saturated_mask")
     mask.attrs = {
         "long_name": "Shade-saturated pixel (snow fraction unknown, True = excluded)",

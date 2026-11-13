@@ -31,7 +31,12 @@ _METRES_PER_DEGREE = 111_320.0
 def mask_to_uint8(mask: xr.DataArray) -> xr.DataArray:
     """Store a boolean mask as a uint8 companion layer (1 = True)."""
     _require_boolean(mask, mask.name or "mask")
-    out = mask.astype("uint8")
+    out = xr.DataArray(
+        mask.values.astype("uint8"),
+        dims=mask.dims,
+        coords={dimension: mask.coords[dimension] for dimension in mask.dims},
+        name=mask.name,
+    )
     out.attrs = dict(mask.attrs)
     out.attrs.update(flag_values="0,1", flag_meanings="false true")
     return out
@@ -68,13 +73,17 @@ def _require_plane(layer: xr.DataArray, target: xr.DataArray, label: str) -> Non
 def canopy_cover_fraction(
     canopy_raster: xr.DataArray,
     target: xr.DataArray,
+    *,
+    percent: bool = False,
 ) -> xr.DataArray:
-    """Resample a binary or percent canopy raster to a cover fraction on ``target``.
+    """Resample a canopy raster to a cover fraction on ``target``.
 
     The raster is clipped to the target bounds plus a 100 m buffer before
-    average-resampling so edge pixels get full averaging support. Percent
-    rasters (finite maximum above 1) are divided by 100; the raster's declared
-    nodata becomes NaN and is excluded from the average.
+    average-resampling so edge pixels get full averaging support. The caller
+    declares the raster's units: with ``percent=False`` (default) finite values
+    must be 0 or 1; with ``percent=True`` they must lie in [0, 100] and are
+    divided by 100. The raster's declared nodata becomes NaN and is excluded
+    from the average.
     """
     import rioxarray  # noqa: F401  registers the .rio accessor
     from rasterio.enums import Resampling
@@ -108,7 +117,7 @@ def canopy_cover_fraction(
     except NoDataInBounds as error:
         raise ValueError("canopy_raster does not overlap the target grid") from error
 
-    fraction = _canopy_as_fraction(window)
+    fraction = _canopy_as_fraction(window, percent=percent)
     matched = fraction.rio.reproject_match(
         target, resampling=Resampling.average, nodata=np.nan
     )
@@ -123,20 +132,27 @@ def canopy_cover_fraction(
         "long_name": "Canopy cover fraction",
         "units": "1",
         "source": str(canopy_raster.attrs.get("source", "canopy_raster")),
+        "source_units": "percent" if percent else "binary",
         "resampling": "average",
         "edge_buffer_m": CANOPY_EDGE_BUFFER_M,
     }
     return out
 
 
-def _canopy_as_fraction(window: xr.DataArray) -> xr.DataArray:
+def _canopy_as_fraction(window: xr.DataArray, *, percent: bool) -> xr.DataArray:
     values = window.astype("float32")
     nodata = window.rio.nodata
     if nodata is not None:
         values = values.where(window != nodata)
-    finite_max = float(values.max(skipna=True))
-    if np.isfinite(finite_max) and finite_max > 1.0:
-        values = values.where(values <= 100.0) / np.float32(100.0)
+    finite = values.values[np.isfinite(values.values)]
+    if percent:
+        if finite.size and (finite.min() < 0.0 or finite.max() > 100.0):
+            raise ValueError("canopy_raster values must lie in [0, 100] when percent=True")
+        values = values / np.float32(100.0)
+    elif finite.size and not np.isin(finite, (0.0, 1.0)).all():
+        raise ValueError(
+            "canopy_raster must be binary 0/1 (pass percent=True for 0-100 rasters)"
+        )
     values = values.rio.write_crs(window.rio.crs)
     return values.rio.write_nodata(np.nan, encoded=False)
 

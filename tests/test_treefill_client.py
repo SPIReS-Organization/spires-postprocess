@@ -59,6 +59,22 @@ def test_http_inpainter_posts_npy_and_decodes_reply(monkeypatch):
     assert inpainter.__name__ == "http_inpainter(http://example.test:18010)"
 
 
+def test_http_inpainter_raises_on_http_error(monkeypatch):
+    import requests
+
+    class ErrorResponse:
+        content = b""
+        status_code = 500
+
+        def raise_for_status(self):
+            raise requests.HTTPError("500")
+
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: ErrorResponse())
+    inpainter = http_inpainter("http://example.test:18010")
+    with pytest.raises(requests.HTTPError):
+        inpainter(np.zeros((4, 4), np.float32), np.zeros((4, 4), bool), 0.0, 1.0)
+
+
 def test_service_available_false_when_unreachable():
     assert service_available("http://127.0.0.1:9", timeout=0.5) is False
 

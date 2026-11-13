@@ -16,11 +16,20 @@ from spires_postprocess._xarray_validation import (
 
 _OBSCURATION_LIMIT = 0.99
 _GEOMETRY_EPSILON = 1.0e-6
+NADIR_FULL_SHADE = "nadir_full_shade"
 CANOPY_POLICY_BY_SENSOR = {
     "modis": "modis_full_shade",
     "viirs": "viirs_canopy_weighted_shade",
+    # Landsat, Sentinel-2 and HLS view within ~7.5 degrees of nadir, so Liu's
+    # viewable-canopy exponent 1/cos(theta_v') is within 1 % of 1 and viewable
+    # canopy equals canopy cover; no sensor or terrain geometry is used.
+    "landsat": NADIR_FULL_SHADE,
+    "sentinel2": NADIR_FULL_SHADE,
+    "hls_l30": NADIR_FULL_SHADE,
+    "hls_s30": NADIR_FULL_SHADE,
 }
-CANOPY_CORRECTION_POLICIES = tuple(CANOPY_POLICY_BY_SENSOR.values())
+CANOPY_CORRECTION_POLICIES = tuple(dict.fromkeys(CANOPY_POLICY_BY_SENSOR.values()))
+_FULL_SHADE_POLICIES = frozenset({"modis_full_shade", NADIR_FULL_SHADE})
 
 
 def validate_canopy_correction_policy(policy: str | None, sensor: str | None) -> None:
@@ -31,7 +40,10 @@ def validate_canopy_correction_policy(policy: str | None, sensor: str | None) ->
             + ", ".join(CANOPY_CORRECTION_POLICIES)
         )
     if sensor not in CANOPY_POLICY_BY_SENSOR:
-        raise ValueError("Canopy correction requires sensor='modis' or sensor='viirs'")
+        raise ValueError(
+            "Canopy correction requires sensor in: "
+            + ", ".join(repr(name) for name in CANOPY_POLICY_BY_SENSOR)
+        )
     if policy != CANOPY_POLICY_BY_SENSOR[sensor]:
         raise ValueError(f"Sensor {sensor!r} requires {CANOPY_POLICY_BY_SENSOR[sensor]!r}")
 
@@ -184,9 +196,16 @@ def apply_snow_fraction_adjustments(
     are not modified. Required results and ancillary inputs must already be
     float32 and within their documented physical ranges.
     """
+    nadir = canopy_correction_policy == NADIR_FULL_SHADE
     if canopy_fraction is not None:
         validate_canopy_correction_policy(canopy_correction_policy, sensor)
-        if slope is None or aspect is None or sensor_azimuth is None:
+        geometry = (sensor_zenith, sensor_azimuth, slope, aspect)
+        if nadir and any(layer is not None for layer in geometry):
+            raise ValueError(
+                "nadir_full_shade takes no sensor or terrain geometry; omit "
+                "sensor_zenith, sensor_azimuth, slope, and aspect"
+            )
+        if not nadir and (slope is None or aspect is None or sensor_azimuth is None):
             raise ValueError("sensor-specific canopy correction requires canopy, slope, aspect, and sensor azimuth")
         if average_vertical_crown_radius != 4.644 or average_horizontal_crown_radius != 1.72:
             raise ValueError("selected canopy policies require the evaluated crown radii 4.644 and 1.72")
@@ -200,25 +219,37 @@ def apply_snow_fraction_adjustments(
     viewable_canopy = None
 
     if canopy_fraction is not None:
-        if sensor_zenith is None:
-            raise ValueError("sensor_zenith is required for canopy correction")
-        viewable_canopy = calculate_viewable_canopy_fraction(
-            canopy_fraction,
-            sensor_zenith,
-            sensor_azimuth=sensor_azimuth,
-            slope=slope,
-            aspect=aspect,
-            average_vertical_crown_radius=average_vertical_crown_radius,
-            average_horizontal_crown_radius=average_horizontal_crown_radius,
-            canopy_source=canopy_source,
-        )
-        viewable_canopy_attrs = dict(viewable_canopy.attrs)
-        viewable_canopy = _prepare_fraction_layer(
-            viewable_canopy,
-            fsnow,
-            name="viewable_canopy_fraction",
-        )
-        viewable_canopy.attrs = viewable_canopy_attrs
+        if nadir:
+            viewable_canopy = _prepare_fraction_layer(
+                canopy_fraction, fsnow, name="canopy_fraction"
+            ).copy()
+            viewable_canopy.attrs = {
+                "long_name": "View-angle-adjusted canopy obstruction fraction",
+                "units": "1",
+                "model": "nadir_canopy_equals_cover",
+                "source": _source_label(canopy_fraction, canopy_source, "canopy_fraction"),
+                "terrain_geometry_used": 0,
+            }
+        else:
+            if sensor_zenith is None:
+                raise ValueError("sensor_zenith is required for canopy correction")
+            viewable_canopy = calculate_viewable_canopy_fraction(
+                canopy_fraction,
+                sensor_zenith,
+                sensor_azimuth=sensor_azimuth,
+                slope=slope,
+                aspect=aspect,
+                average_vertical_crown_radius=average_vertical_crown_radius,
+                average_horizontal_crown_radius=average_horizontal_crown_radius,
+                canopy_source=canopy_source,
+            )
+            viewable_canopy_attrs = dict(viewable_canopy.attrs)
+            viewable_canopy = _prepare_fraction_layer(
+                viewable_canopy,
+                fsnow,
+                name="viewable_canopy_fraction",
+            )
+            viewable_canopy.attrs = viewable_canopy_attrs
         canopy_attrs = {
             "long_name": "Snow fraction adjusted for shade and canopy obstruction",
             "units": "1",
@@ -236,7 +267,7 @@ def apply_snow_fraction_adjustments(
             "obscuration_upper_bound": _OBSCURATION_LIMIT,
         }
         canopy = _prepare_fraction_layer(canopy_fraction, fsnow, name="canopy_fraction")
-        is_modis = sensor == "modis"
+        is_modis = canopy_correction_policy in _FULL_SHADE_POLICIES
         rho = np.float32(0.1 if is_modis else 0.5)
         weight = xr.ones_like(canopy) if is_modis else (
             np.float32(1) - np.float32(0.75)
@@ -264,6 +295,7 @@ def apply_snow_fraction_adjustments(
             geometry_gain_exponent=float(rho),
             geometry_regularization="amplification_only",
             shade_treatment="full" if is_modis else "ramp_1_at_0.05_to_0.25_at_0.30",
+            viewable_canopy_model=viewable_canopy.attrs.get("model", "unknown"),
             total_gain_cap=5.0,
             detection_applied=0,
         )

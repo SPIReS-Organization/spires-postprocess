@@ -101,3 +101,38 @@ def test_tree_mask_without_dilation_and_nan(grid):
     mask = tree_mask(cover, threshold=0.5, dilate_cells=0)
     assert int(mask.sum()) == 1
     assert bool(mask[2, 2])
+
+
+from spires_postprocess.masks import land_mask_from_tiles, land_water_tile_path
+
+
+def test_land_water_tile_path_names_sw_corner(tmp_path):
+    (tmp_path / "landWater2020_-120_030.tif").touch()
+    path = land_water_tile_path((-119.1, 37.5, -118.9, 37.7), tmp_path)
+    assert path.name == "landWater2020_-120_030.tif"
+
+
+def test_land_water_tile_path_missing_tile_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="landWater2020_-120_030.tif"):
+        land_water_tile_path((-119.1, 37.5, -118.9, 37.7), tmp_path)
+
+
+def test_land_water_tile_path_spanning_tiles_raises(tmp_path):
+    with pytest.raises(ValueError, match="span"):
+        land_water_tile_path((-120.5, 37.5, -119.5, 37.7), tmp_path)
+
+
+def test_land_mask_from_tiles_marks_land_true(grid, water_tile_dir):
+    mask = land_mask_from_tiles(grid, water_tile_dir)
+    assert mask.dtype == bool
+    assert mask.name == "land_mask"
+    assert bool(mask.isel(x=slice(0, 4)).all())
+    assert not bool(mask.isel(x=slice(4, None)).any())
+    np.testing.assert_array_equal(mask["x"].values, grid["x"].values)
+    assert mask.attrs["tile"] == "landWater2020_-120_030.tif"
+
+
+def test_land_mask_requires_crs(water_tile_dir, grid):
+    bare = xr.DataArray(grid.values, dims=grid.dims, coords={"y": grid["y"], "x": grid["x"]})
+    with pytest.raises(ValueError, match="CRS"):
+        land_mask_from_tiles(bare, water_tile_dir)

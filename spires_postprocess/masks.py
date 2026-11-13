@@ -174,3 +174,74 @@ def tree_mask(
         "source": str(cover_fraction.attrs.get("source", "canopy_fraction")),
     }
     return mask
+
+
+def land_water_tile_path(
+    bounds_4326: tuple[float, float, float, float],
+    directory: str | Path,
+) -> Path:
+    """Return the single ``landWater2020_{lon:04d}_{lat:03d}.tif`` tile covering bounds.
+
+    Tiles are 30-degree EPSG:4326 squares named by their south-west corner.
+    """
+    minx, miny, maxx, maxy = bounds_4326
+    lons = _tile_origins(minx, maxx)
+    lats = _tile_origins(miny, maxy)
+    if len(lons) != 1 or len(lats) != 1:
+        raise ValueError(
+            f"target bounds {bounds_4326} span multiple land/water tiles "
+            f"(lon origins {lons}, lat origins {lats}); split the target"
+        )
+    path = Path(directory) / f"landWater2020_{lons[0]:04d}_{lats[0]:03d}.tif"
+    if not path.is_file():
+        raise FileNotFoundError(f"land/water tile is not staged: {path}")
+    return path
+
+
+def _tile_origins(low: float, high: float) -> list[int]:
+    first = math.floor(low / LAND_WATER_TILE_DEG) * LAND_WATER_TILE_DEG
+    last = math.floor(high / LAND_WATER_TILE_DEG) * LAND_WATER_TILE_DEG
+    return list(range(first, last + 1, LAND_WATER_TILE_DEG))
+
+
+def land_mask_from_tiles(target: xr.DataArray, directory: str | Path) -> xr.DataArray:
+    """True where the land/water tile says LAND, nearest-resampled onto ``target``.
+
+    ``directory`` has no default and no environment fallback on purpose: an
+    unnoticed absent mask is the failure this function exists to prevent.
+    """
+    import rioxarray  # noqa: F401
+
+    validate_target_layout(target, "target")
+    if target.dims != ("y", "x"):
+        raise ValueError("target must have dimensions ('y', 'x')")
+    if target.rio.crs is None:
+        raise ValueError("target must carry a CRS (use .rio.write_crs)")
+    bounds = tuple(float(b) for b in target.rio.transform_bounds("EPSG:4326"))
+    path = land_water_tile_path(bounds, directory)
+    minx, miny, maxx, maxy = bounds
+    with rioxarray.open_rasterio(path) as tile:
+        tile = tile.squeeze(drop=True)
+        window = tile.rio.clip_box(
+            minx - LAND_WATER_EDGE_BUFFER_DEG,
+            miny - LAND_WATER_EDGE_BUFFER_DEG,
+            maxx + LAND_WATER_EDGE_BUFFER_DEG,
+            maxy + LAND_WATER_EDGE_BUFFER_DEG,
+        ).load()
+        crs = tile.rio.crs
+    window = window.rio.write_crs(crs)
+    # Nearest (rioxarray default) is the only correct choice for a categorical mask.
+    matched = window.rio.reproject_match(target)
+    mask = xr.DataArray(
+        np.asarray(matched.values == LAND_WATER_LAND_VALUE, dtype=bool),
+        dims=("y", "x"),
+        coords={"y": target["y"], "x": target["x"]},
+        name="land_mask",
+    )
+    mask.attrs = {
+        "long_name": "Land mask (True = land, False = water)",
+        "source": "landWater2020",
+        "tile": path.name,
+        "resampling": "nearest",
+    }
+    return mask

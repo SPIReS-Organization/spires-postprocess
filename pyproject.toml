@@ -21,7 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
-treefill = ["requests"]
 
 [project.urls]
 Homepage = "https://github.com/SPIReS-Organization/spires-postprocess"

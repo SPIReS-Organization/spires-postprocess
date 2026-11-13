@@ -7,13 +7,25 @@ which is True for land because the product semantics are "keep land".
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
 import xarray as xr
+from scipy import ndimage
 
 from spires_postprocess._xarray_validation import (
     require_matching_coords,
     validate_target_layout,
 )
+
+TREE_COVER_THRESHOLD = 0.10
+TREE_DILATE_CELLS = 1
+CANOPY_EDGE_BUFFER_M = 100.0
+LAND_WATER_TILE_DEG = 30
+LAND_WATER_EDGE_BUFFER_DEG = 0.01
+LAND_WATER_LAND_VALUE = 1
+_METRES_PER_DEGREE = 111_320.0
 
 
 def mask_to_uint8(mask: xr.DataArray) -> xr.DataArray:

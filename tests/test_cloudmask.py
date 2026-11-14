@@ -143,3 +143,43 @@ def test_classify_clouds_works_without_provenance_attribute():
     out = classify_clouds(reflectance(), classifier=lambda rgnir: checker_classes())
     assert "cloud_model" not in out.attrs
     assert out.attrs["flag_meanings"].startswith("clear thick_cloud")
+
+
+def test_cloud_mask_from_classes_excludes_cloud_shadow_and_nodata(grid):
+    from spires_postprocess.cloudmask import classify_clouds, cloud_mask_from_classes
+    from spires_postprocess.masks import mask_to_uint8
+
+    refl = reflectance()
+    refl.loc[dict(band="green")][4, :] = np.nan
+    classes = classify_clouds(refl, classifier=StubClassifier(checker_classes()))
+    mask = cloud_mask_from_classes(classes, grid)
+    assert mask.dtype == np.dtype(bool)
+    assert mask.name == "cloud_mask"
+    assert mask.dims == ("y", "x")
+    assert not mask.values[0].any()  # clear
+    assert mask.values[1].all() and mask.values[2].all() and mask.values[3].all()
+    assert mask.values[4].all()  # no observation
+    assert not mask.values[5:].any()
+    assert "True = excluded" in mask.attrs["long_name"]
+    assert mask.attrs["source"] == "spires_postprocess.cloudmask"
+    assert mask_to_uint8(mask).dtype == np.uint8  # the companion-layer path accepts it
+
+
+def test_cloud_mask_from_classes_can_keep_nodata_and_narrow_classes(grid):
+    from spires_postprocess.cloudmask import cloud_mask_from_classes
+
+    classes = xr.DataArray(checker_classes(), dims=("y", "x"), coords={"y": LAT, "x": LON})
+    classes.values[4, :] = 255
+    mask = cloud_mask_from_classes(classes, grid, cloud_classes=(1,), exclude_no_observation=False)
+    assert mask.values[1].all()
+    assert not mask.values[2].any() and not mask.values[3].any() and not mask.values[4].any()
+
+
+def test_cloud_mask_from_classes_validates_inputs(grid):
+    from spires_postprocess.cloudmask import cloud_mask_from_classes
+
+    with pytest.raises(ValueError, match="uint8"):
+        cloud_mask_from_classes(xr.DataArray(np.zeros((N, N), np.int16), dims=("y", "x"), coords={"y": LAT, "x": LON}), grid)
+    shifted = xr.DataArray(checker_classes(), dims=("y", "x"), coords={"y": LAT + 1.0, "x": LON})
+    with pytest.raises(ValueError):
+        cloud_mask_from_classes(shifted, grid)

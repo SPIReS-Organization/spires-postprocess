@@ -100,3 +100,30 @@ def classify_clouds(reflectance: xr.DataArray, *, classifier: Classifier | None 
     }
     out.attrs.update({str(k): str(v) for k, v in dict(getattr(classifier, "provenance", {})).items()})
     return out
+
+
+def cloud_mask_from_classes(
+    classes: xr.DataArray,
+    target: xr.DataArray,
+    *,
+    cloud_classes: tuple[int, ...] = CLOUD_CLASSES,
+    exclude_no_observation: bool = True,
+) -> xr.DataArray:
+    """Collapse OCM classes to the boolean ``cloud_mask`` ``process()`` accepts (True = excluded)."""
+    validate_target_layout(target, "target")
+    if not isinstance(classes, xr.DataArray) or classes.dtype != np.dtype(np.uint8):
+        raise ValueError("classes must be a uint8 DataArray from classify_clouds")
+    _require_plane(classes, target, "classes")
+    excluded = np.isin(classes.values, cloud_classes)
+    if exclude_no_observation:
+        excluded |= classes.values == NO_OBSERVATION
+    mask = xr.DataArray(excluded, dims=("y", "x"), coords=classes.coords, name="cloud_mask")
+    mask.attrs = {
+        "long_name": "Cloud or invalid observation mask (True = excluded)",
+        "source": "spires_postprocess.cloudmask",
+        "excluded_classes": ",".join(map(str, cloud_classes)) + (",255" if exclude_no_observation else ""),
+    }
+    for key in ("cloud_model", "cloud_model_version", "omnicloudmask_version", "cloud_backend"):
+        if key in classes.attrs:
+            mask.attrs[key] = classes.attrs[key]
+    return mask

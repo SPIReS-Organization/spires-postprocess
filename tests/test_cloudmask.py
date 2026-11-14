@@ -256,3 +256,31 @@ def test_public_exports():
     for name in ("classify_clouds", "cloud_mask_from_classes", "omnicloudmask_classifier", "Classifier", "rgnir_stack"):
         assert name in spires_postprocess.__all__
         assert hasattr(spires_postprocess, name)
+
+
+def test_omnicloudmask_reference_backend_is_deterministic_on_cpu():
+    pytest.importorskip("omnicloudmask")
+    from spires_postprocess.cloudmask import OMNICLOUDMASK_VERSION, classify_clouds, omnicloudmask_classifier
+
+    n = 64
+    rng = np.random.default_rng(0)
+    base = rng.uniform(0.05, 0.25, size=(n, n)).astype(np.float32)
+    bands = {"red": base, "green": base * 0.9, "nir": base * 1.4}
+    for b in bands.values():
+        b[16:32, 16:48] = 0.85  # bright block: cloud-like
+    stack = np.stack([bands["red"], bands["green"], bands["nir"]], axis=-1)
+    stack[:4, :, :] = np.nan  # nodata rows
+    refl = xr.DataArray(
+        stack,
+        dims=("y", "x", "band"),
+        coords={"y": np.arange(n, dtype=float), "x": np.arange(n, dtype=float), "band": ["red", "green", "nir"]},
+    )
+    classifier = omnicloudmask_classifier()
+    first = classify_clouds(refl, classifier=classifier)
+    second = classify_clouds(refl, classifier=classifier)
+    np.testing.assert_array_equal(first.values, second.values)
+    assert set(np.unique(first.values)) <= {0, 1, 2, 3, 255}
+    assert (first.values[:4] == 255).all()
+    assert (first.values[4:] != 255).all()
+    assert first.attrs["omnicloudmask_version"] == OMNICLOUDMASK_VERSION
+    assert first.attrs["cloud_model_version"] == "4.0"

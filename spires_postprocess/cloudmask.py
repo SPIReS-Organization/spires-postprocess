@@ -66,3 +66,37 @@ def rgnir_stack(reflectance: xr.DataArray, bands: tuple[str, str, str] = RGNIR_B
     observed = np.isfinite(values).all(axis=0)
     dn = np.clip(np.rint(np.nan_to_num(values) * REFLECTANCE_SCALE), 1, np.iinfo(np.uint16).max)
     return np.where(observed[None, :, :], dn, NODATA_DN).astype(np.uint16)
+
+
+def classify_clouds(reflectance: xr.DataArray, *, classifier: Classifier | None = None) -> xr.DataArray:
+    """Per-pixel OCM classes on the reflectance grid as uint8 ``(y, x)``.
+
+    Values: 0 clear, 1 thick cloud, 2 thin cloud, 3 cloud shadow, 255 no
+    observation (a band was non-finite). ``classifier`` defaults to the
+    in-process OmniCloudMask backend, which needs the ``cloudmask`` extra.
+    Provenance attrs are copied from ``classifier.provenance`` when present.
+    """
+    if classifier is None:
+        classifier = omnicloudmask_classifier()
+    rgnir = rgnir_stack(reflectance)
+    classes = np.asarray(classifier(rgnir))
+    if classes.shape != rgnir.shape[1:]:
+        raise ValueError(f"classifier returned shape {classes.shape}; expected {rgnir.shape[1:]}")
+    if classes.dtype != np.uint8:
+        raise ValueError(f"classifier must return uint8 classes; got {classes.dtype}")
+    if not np.isin(classes, (0, 1, 2, 3)).all():
+        raise ValueError("classifier must return classes in 0..3")
+    classes = classes.copy()
+    classes[(rgnir == NODATA_DN).all(axis=0)] = NO_OBSERVATION
+
+    coords = {k: v for k, v in reflectance.coords.items() if set(v.dims) <= {"y", "x"}}
+    out = xr.DataArray(classes, dims=("y", "x"), coords=coords, name="cloud_classes")
+    out.attrs = {
+        "long_name": "OmniCloudMask cloud and cloud shadow classes",
+        "flag_values": CLASS_FLAG_VALUES,
+        "flag_meanings": CLASS_FLAG_MEANINGS,
+        "input_bands": ",".join(RGNIR_BANDS),
+        "input_scaling": f"reflectance x {REFLECTANCE_SCALE} as uint16, {NODATA_DN} = nodata",
+    }
+    out.attrs.update({str(k): str(v) for k, v in dict(getattr(classifier, "provenance", {})).items()})
+    return out

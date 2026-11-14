@@ -73,3 +73,73 @@ def test_rgnir_stack_requires_red_green_nir():
         rgnir_stack(reflectance(bands=("blue", "green", "red")))
     with pytest.raises(ValueError, match="band"):
         rgnir_stack(reflectance().isel(band=0, drop=True))
+
+
+class StubClassifier:
+    """Returns a fixed class plane; records what it was called with."""
+
+    provenance = {"cloud_model": "stub", "cloud_backend": "test"}
+
+    def __init__(self, classes: np.ndarray):
+        self.classes = classes
+        self.received = None
+
+    def __call__(self, rgnir: np.ndarray) -> np.ndarray:
+        self.received = rgnir
+        return self.classes
+
+
+def checker_classes() -> np.ndarray:
+    classes = np.zeros((N, N), dtype=np.uint8)
+    classes[1, :] = 1
+    classes[2, :] = 2
+    classes[3, :] = 3
+    return classes
+
+
+def test_classify_clouds_returns_uint8_plane_with_provenance():
+    from spires_postprocess.cloudmask import classify_clouds
+
+    stub = StubClassifier(checker_classes())
+    out = classify_clouds(reflectance(), classifier=stub)
+    assert out.dtype == np.uint8
+    assert out.dims == ("y", "x")
+    assert out.name == "cloud_classes"
+    np.testing.assert_array_equal(out["y"].values, LAT)
+    np.testing.assert_array_equal(out["x"].values, LON)
+    assert out.attrs["flag_values"] == "0,1,2,3,255"
+    assert out.attrs["cloud_model"] == "stub"
+    assert out.attrs["cloud_backend"] == "test"
+    assert out.attrs["input_bands"] == "red,green,nir"
+    assert stub.received.dtype == np.uint16 and stub.received.shape == (3, N, N)
+
+
+def test_classify_clouds_flags_nodata_as_255_not_clear():
+    from spires_postprocess.cloudmask import classify_clouds
+
+    refl = reflectance()
+    refl.loc[dict(band="red")][0, :] = np.nan
+    out = classify_clouds(refl, classifier=StubClassifier(checker_classes()))
+    assert (out.values[0, :] == 255).all()
+    assert (out.values[1, :] == 1).all()
+
+
+def test_classify_clouds_rejects_bad_classifier_output():
+    from spires_postprocess.cloudmask import classify_clouds
+
+    with pytest.raises(ValueError, match="shape"):
+        classify_clouds(reflectance(), classifier=StubClassifier(np.zeros((N, N + 1), np.uint8)))
+    with pytest.raises(ValueError, match="uint8"):
+        classify_clouds(reflectance(), classifier=StubClassifier(np.zeros((N, N), np.int32)))
+    bad = checker_classes()
+    bad[0, 0] = 7
+    with pytest.raises(ValueError, match="0..3"):
+        classify_clouds(reflectance(), classifier=StubClassifier(bad))
+
+
+def test_classify_clouds_works_without_provenance_attribute():
+    from spires_postprocess.cloudmask import classify_clouds
+
+    out = classify_clouds(reflectance(), classifier=lambda rgnir: checker_classes())
+    assert "cloud_model" not in out.attrs
+    assert out.attrs["flag_meanings"].startswith("clear thick_cloud")

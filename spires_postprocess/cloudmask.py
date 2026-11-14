@@ -127,3 +127,66 @@ def cloud_mask_from_classes(
         if key in classes.attrs:
             mask.attrs[key] = classes.attrs[key]
     return mask
+
+
+@dataclass(frozen=True)
+class OmniCloudMaskClassifier:
+    """Reference backend: ``omnicloudmask.predict_from_array`` with upstream defaults.
+
+    CPU by default so anyone with the repo and the ``cloudmask`` extra gets the
+    identical mask; pass ``inference_device="cuda"`` for speed when bit-identity
+    with the CPU reference is not required.
+    """
+
+    inference_device: str = "cpu"
+    patch_size: int = 1000
+    patch_overlap: int = 300
+    batch_size: int = 1
+    model_version: float = OMNICLOUDMASK_MODEL_VERSION
+
+    @property
+    def provenance(self) -> dict[str, str]:
+        import omnicloudmask
+
+        return {
+            "cloud_model": "OmniCloudMask",
+            "cloud_model_version": str(self.model_version),
+            "omnicloudmask_version": str(omnicloudmask.__version__),
+            "cloud_backend": f"omnicloudmask.predict_from_array[{self.inference_device}]",
+        }
+
+    def __call__(self, rgnir: np.ndarray) -> np.ndarray:
+        import omnicloudmask
+
+        pred = omnicloudmask.predict_from_array(
+            np.ascontiguousarray(rgnir),
+            patch_size=self.patch_size,
+            patch_overlap=self.patch_overlap,
+            batch_size=self.batch_size,
+            inference_device=self.inference_device,
+            mosaic_device=self.inference_device,
+            no_data_value=NODATA_DN,
+            apply_no_data_mask=True,
+            model_version=self.model_version,
+        )
+        return np.asarray(pred, dtype=np.uint8)[0]
+
+
+def omnicloudmask_classifier(**options) -> OmniCloudMaskClassifier:
+    """Build the in-process OmniCloudMask backend; needs ``pip install 'spires-postprocess[cloudmask]'``."""
+    try:
+        import omnicloudmask
+    except ImportError as exc:
+        raise ImportError(
+            "the OmniCloudMask backend needs the optional 'cloudmask' extra: "
+            "pip install 'spires-postprocess[cloudmask]'"
+        ) from exc
+    installed = str(getattr(omnicloudmask, "__version__", "unknown"))
+    if installed != OMNICLOUDMASK_VERSION:
+        warnings.warn(
+            f"omnicloudmask {installed} installed; spires-postprocess pins {OMNICLOUDMASK_VERSION} "
+            "for reproducible masks",
+            UserWarning,
+            stacklevel=2,
+        )
+    return OmniCloudMaskClassifier(**options)

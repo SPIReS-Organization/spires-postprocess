@@ -183,3 +183,68 @@ def test_cloud_mask_from_classes_validates_inputs(grid):
     shifted = xr.DataArray(checker_classes(), dims=("y", "x"), coords={"y": LAT + 1.0, "x": LON})
     with pytest.raises(ValueError):
         cloud_mask_from_classes(shifted, grid)
+
+
+def test_omnicloudmask_classifier_import_error_names_the_extra(monkeypatch):
+    import sys
+
+    from spires_postprocess.cloudmask import omnicloudmask_classifier
+
+    monkeypatch.setitem(sys.modules, "omnicloudmask", None)  # makes `import omnicloudmask` raise ImportError
+    with pytest.raises(ImportError, match=r"spires-postprocess\[cloudmask\]"):
+        omnicloudmask_classifier()
+
+
+def test_classify_clouds_default_backend_needs_the_extra(monkeypatch):
+    import sys
+
+    from spires_postprocess.cloudmask import classify_clouds
+
+    monkeypatch.setitem(sys.modules, "omnicloudmask", None)
+    with pytest.raises(ImportError, match="cloudmask"):
+        classify_clouds(reflectance())
+
+
+def test_omnicloudmask_classifier_calls_predict_with_pinned_defaults(monkeypatch):
+    import sys
+    import types
+
+    from spires_postprocess.cloudmask import OMNICLOUDMASK_VERSION, omnicloudmask_classifier
+
+    calls = {}
+
+    def fake_predict(input_array, **kwargs):
+        calls["array"] = input_array
+        calls.update(kwargs)
+        return np.zeros((1,) + input_array.shape[1:], dtype=np.uint8)
+
+    fake = types.SimpleNamespace(__version__=OMNICLOUDMASK_VERSION, predict_from_array=fake_predict)
+    monkeypatch.setitem(sys.modules, "omnicloudmask", fake)
+
+    classifier = omnicloudmask_classifier()
+    out = classifier(np.ones((3, 40, 40), np.uint16))
+    assert out.shape == (40, 40) and out.dtype == np.uint8
+    assert calls["inference_device"] == "cpu"
+    assert calls["mosaic_device"] == "cpu"
+    assert calls["no_data_value"] == 0
+    assert calls["model_version"] == 4.0
+    assert calls["patch_size"] == 1000 and calls["patch_overlap"] == 300
+    assert calls["batch_size"] == 1
+    assert classifier.provenance == {
+        "cloud_model": "OmniCloudMask",
+        "cloud_model_version": "4.0",
+        "omnicloudmask_version": OMNICLOUDMASK_VERSION,
+        "cloud_backend": "omnicloudmask.predict_from_array[cpu]",
+    }
+
+
+def test_omnicloudmask_classifier_warns_on_version_drift(monkeypatch):
+    import sys
+    import types
+
+    from spires_postprocess.cloudmask import omnicloudmask_classifier
+
+    fake = types.SimpleNamespace(__version__="9.9.9", predict_from_array=lambda a, **k: None)
+    monkeypatch.setitem(sys.modules, "omnicloudmask", fake)
+    with pytest.warns(UserWarning, match="9.9.9"):
+        omnicloudmask_classifier()

@@ -233,6 +233,28 @@ out = process(
 )
 ```
 
+### Cloud mask from OmniCloudMask
+
+`cloud_mask_from_valid` only inverts the provider QA (`valid`). For Landsat, HLS and
+Sentinel-2 (10–50 m) an alternative is [OmniCloudMask](https://github.com/DPIRD-DMA/OmniCloudMask),
+a sensor-agnostic Red/Green/NIR CNN. Install the pinned reference backend with
+`pip install 'spires-postprocess[cloudmask]'` (adds torch); the core package never imports it.
+
+```python
+from spires_postprocess import classify_clouds, cloud_mask_from_classes, omnicloudmask_classifier
+
+classes = classify_clouds(data.scene["reflectance"], classifier=omnicloudmask_classifier())
+# uint8: 0 clear, 1 thick cloud, 2 thin cloud, 3 cloud shadow, 255 no observation
+cloud_mask = cloud_mask_from_classes(classes, data.results["fsnow"])   # bool, True = excluded
+out = process(data, ..., cloud_mask=cloud_mask, gate_products=True)
+```
+
+`classify_clouds` accepts any `(3, y, x) uint16 -> (y, x) uint8` callable as `classifier`,
+so a GPU service can stand in for the in-process backend; provenance attrs
+(`cloud_model`, `cloud_model_version`, `omnicloudmask_version`, `cloud_backend`) are copied
+from the classifier's `provenance` mapping when it has one. CPU inference is the reproducible
+reference; MODIS/VIIRS (250–500 m) are outside the model's validity.
+
 Output layers: `canopy_adjusted_fsnow`, `shade_adjusted_fsnow`, `*_treefilled` (when an
 inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration_product`
 (gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`, `tree_mask`,

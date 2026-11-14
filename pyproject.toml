@@ -21,6 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+# In-process OmniCloudMask reference backend (spires_postprocess.cloudmask). Pinned: the
+# mask must be reproducible from the repo + this extra alone. Valid for 10-50 m sensors only.
+cloudmask = ["omnicloudmask==1.7.1", "torch>=2.3.0"]
 
 [project.urls]
 Homepage = "https://github.com/SPIReS-Organization/spires-postprocess"

@@ -248,3 +248,11 @@ def test_omnicloudmask_classifier_warns_on_version_drift(monkeypatch):
     monkeypatch.setitem(sys.modules, "omnicloudmask", fake)
     with pytest.warns(UserWarning, match="9.9.9"):
         omnicloudmask_classifier()
+
+
+def test_public_exports():
+    import spires_postprocess
+
+    for name in ("classify_clouds", "cloud_mask_from_classes", "omnicloudmask_classifier", "Classifier", "rgnir_stack"):
+        assert name in spires_postprocess.__all__
+        assert hasattr(spires_postprocess, name)

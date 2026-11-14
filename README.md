@@ -252,8 +252,9 @@ out = process(data, ..., cloud_mask=cloud_mask, gate_products=True)
 `classify_clouds` accepts any `(3, y, x) uint16 -> (y, x) uint8` callable as `classifier`,
 so a GPU service can stand in for the in-process backend; provenance attrs
 (`cloud_model`, `cloud_model_version`, `omnicloudmask_version`, `cloud_backend`) are copied
-from the classifier's `provenance` mapping when it has one. CPU inference is the reproducible
-reference; MODIS/VIIRS (250–500 m) are outside the model's validity.
+from the classifier's `provenance` mapping when it has one. `omnicloudmask_classifier()` runs on the GPU
+when torch sees one (pass `inference_device="cpu"` to force the CPU); the recorded `cloud_backend`
+says which. MODIS/VIIRS (250–500 m) are outside the model's validity.
 
 Output layers: `canopy_adjusted_fsnow`, `shade_adjusted_fsnow`, `*_treefilled` (when an
 inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration_product`

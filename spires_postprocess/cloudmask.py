@@ -133,12 +133,12 @@ def cloud_mask_from_classes(
 class OmniCloudMaskClassifier:
     """Reference backend: ``omnicloudmask.predict_from_array`` with upstream defaults.
 
-    CPU by default so anyone with the repo and the ``cloudmask`` extra gets the
-    identical mask; pass ``inference_device="cuda"`` for speed when bit-identity
-    with the CPU reference is not required.
+    ``inference_device`` is a concrete torch device string; use
+    ``omnicloudmask_classifier()`` to pick the GPU automatically when one is
+    present. The resolved device is recorded in ``provenance``.
     """
 
-    inference_device: str = "cpu"
+    inference_device: str
     patch_size: int = 1000
     patch_overlap: int = 300
     batch_size: int = 1
@@ -172,8 +172,19 @@ class OmniCloudMaskClassifier:
         return np.asarray(pred, dtype=np.uint8)[0]
 
 
-def omnicloudmask_classifier(**options) -> OmniCloudMaskClassifier:
-    """Build the in-process OmniCloudMask backend; needs ``pip install 'spires-postprocess[cloudmask]'``."""
+def default_inference_device() -> str:
+    """``"cuda"`` when a GPU is visible to torch, else ``"cpu"``."""
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def omnicloudmask_classifier(inference_device: str | None = None, **options) -> OmniCloudMaskClassifier:
+    """Build the in-process OmniCloudMask backend; needs ``pip install 'spires-postprocess[cloudmask]'``.
+
+    Runs on the GPU when torch sees one, otherwise on the CPU; pass
+    ``inference_device`` to force either.
+    """
     try:
         import omnicloudmask
     except ImportError as exc:
@@ -189,4 +200,6 @@ def omnicloudmask_classifier(**options) -> OmniCloudMaskClassifier:
             UserWarning,
             stacklevel=2,
         )
-    return OmniCloudMaskClassifier(**options)
+    if inference_device is None:
+        inference_device = default_inference_device()
+    return OmniCloudMaskClassifier(inference_device=inference_device, **options)

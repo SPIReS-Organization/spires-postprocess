@@ -221,7 +221,7 @@ def test_omnicloudmask_classifier_calls_predict_with_pinned_defaults(monkeypatch
     fake = types.SimpleNamespace(__version__=OMNICLOUDMASK_VERSION, predict_from_array=fake_predict)
     monkeypatch.setitem(sys.modules, "omnicloudmask", fake)
 
-    classifier = omnicloudmask_classifier()
+    classifier = omnicloudmask_classifier(inference_device="cpu")
     out = classifier(np.ones((3, 40, 40), np.uint16))
     assert out.shape == (40, 40) and out.dtype == np.uint8
     assert calls["inference_device"] == "cpu"
@@ -247,7 +247,24 @@ def test_omnicloudmask_classifier_warns_on_version_drift(monkeypatch):
     fake = types.SimpleNamespace(__version__="9.9.9", predict_from_array=lambda a, **k: None)
     monkeypatch.setitem(sys.modules, "omnicloudmask", fake)
     with pytest.warns(UserWarning, match="9.9.9"):
-        omnicloudmask_classifier()
+        omnicloudmask_classifier(inference_device="cpu")
+
+
+@pytest.mark.parametrize("cuda_available, expected", [(True, "cuda"), (False, "cpu")])
+def test_omnicloudmask_classifier_picks_gpu_when_torch_sees_one(monkeypatch, cuda_available, expected):
+    import sys
+    import types
+
+    from spires_postprocess.cloudmask import OMNICLOUDMASK_VERSION, omnicloudmask_classifier
+
+    fake_ocm = types.SimpleNamespace(__version__=OMNICLOUDMASK_VERSION, predict_from_array=lambda a, **k: None)
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: cuda_available))
+    monkeypatch.setitem(sys.modules, "omnicloudmask", fake_ocm)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    classifier = omnicloudmask_classifier()
+    assert classifier.inference_device == expected
+    assert classifier.provenance["cloud_backend"] == f"omnicloudmask.predict_from_array[{expected}]"
 
 
 def test_public_exports():
@@ -258,8 +275,10 @@ def test_public_exports():
         assert hasattr(spires_postprocess, name)
 
 
-def test_omnicloudmask_reference_backend_is_deterministic_on_cpu():
+def test_omnicloudmask_reference_backend_runs_on_gpu_and_is_deterministic():
     pytest.importorskip("omnicloudmask")
+    import torch
+
     from spires_postprocess.cloudmask import OMNICLOUDMASK_VERSION, classify_clouds, omnicloudmask_classifier
 
     n = 64
@@ -284,3 +303,12 @@ def test_omnicloudmask_reference_backend_is_deterministic_on_cpu():
     assert (first.values[4:] != 255).all()
     assert first.attrs["omnicloudmask_version"] == OMNICLOUDMASK_VERSION
     assert first.attrs["cloud_model_version"] == "4.0"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    assert first.attrs["cloud_backend"] == f"omnicloudmask.predict_from_array[{device}]"
+    if device == "cuda":
+        # Synthetic noise is not realistic enough to assert what the model calls cloud,
+        # and GPU/CPU kernels need not agree per pixel; only check the CPU path runs
+        # and honours the same nodata contract.
+        on_cpu = classify_clouds(refl, classifier=omnicloudmask_classifier(inference_device="cpu"))
+        assert on_cpu.attrs["cloud_backend"] == "omnicloudmask.predict_from_array[cpu]"
+        assert (on_cpu.values[:4] == 255).all() and (on_cpu.values[4:] != 255).all()

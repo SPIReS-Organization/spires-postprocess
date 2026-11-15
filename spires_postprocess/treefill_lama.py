@@ -29,3 +29,41 @@ LAMA_MODEL_URL = (
 )
 LAMA_MODEL_SHA256 = "7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c"
 _MODULO = 8  # the TorchScript graph needs H and W divisible by 8
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_weights(
+    model_path: str | os.PathLike | None,
+    *,
+    expected_sha256: str = LAMA_MODEL_SHA256,
+) -> tuple[Path, str]:
+    """Return ``(path, sha256)`` of the TorchScript weights, downloading if needed.
+
+    Resolution order: ``model_path`` argument, then the ``LAMA_MODEL`` environment
+    variable, then ``LAMA_MODEL_URL`` fetched into ``torch.hub.get_dir()/checkpoints``.
+    Raises ``ValueError`` when the file's sha256 differs from ``expected_sha256``.
+    """
+    if model_path is not None:
+        path = Path(model_path)
+    elif os.environ.get("LAMA_MODEL"):
+        path = Path(os.environ["LAMA_MODEL"])
+    else:
+        path = Path(torch.hub.get_dir()) / "checkpoints" / "big-lama.pt"
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            torch.hub.download_url_to_file(LAMA_MODEL_URL, str(path), progress=False)
+    if not path.exists():
+        raise FileNotFoundError(f"LaMa weights not found: {path}")
+    got = _sha256(path)
+    if got != expected_sha256:
+        raise ValueError(
+            f"LaMa weights sha256 mismatch for {path}: got {got}, expected {expected_sha256}"
+        )
+    return path, got

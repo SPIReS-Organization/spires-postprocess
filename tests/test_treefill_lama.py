@@ -60,9 +60,11 @@ def test_resolve_weights_downloads_into_hub_cache(tmp_path, monkeypatch):
     monkeypatch.delenv("LAMA_MODEL", raising=False)
     monkeypatch.setattr(torch.hub, "get_dir", lambda: str(tmp_path))
     calls = []
+    hash_prefixes = []
 
     def fake_download(url, dst, hash_prefix=None, progress=True):
         calls.append(url)
+        hash_prefixes.append(hash_prefix)
         Path(dst).write_bytes(b"weights")
 
     monkeypatch.setattr(torch.hub, "download_url_to_file", fake_download)
@@ -71,6 +73,8 @@ def test_resolve_weights_downloads_into_hub_cache(tmp_path, monkeypatch):
     path, got = treefill_lama.resolve_weights(None, expected_sha256=digest)
     assert path == tmp_path / "checkpoints" / "big-lama.pt"
     assert got == digest and calls == [treefill_lama.LAMA_MODEL_URL]
+    # torch verifies the download against hash_prefix before moving it into the cache
+    assert hash_prefixes == [digest]
     # second call: cached, no download
     treefill_lama.resolve_weights(None, expected_sha256=digest)
     assert len(calls) == 1
@@ -141,6 +145,16 @@ def test_mask_free_tiles_are_skipped():
     assert inp.calls == 6
 
 
+def test_non_integer_tile_params_raise_instead_of_hanging(monkeypatch):
+    # Before int() coercion, tile=4.5 / overlap=4.2 passed the 0 <= overlap < tile check
+    # and then gave _windows a fractional stride, which never terminates. The fixed
+    # constructor raises at validation, so no windowing runs.
+    monkeypatch.setattr(treefill_lama, "resolve_weights", lambda *a, **k: (Path("x"), "0" * 64))
+    monkeypatch.setattr(treefill_lama.torch.jit, "load", lambda *a, **k: torch.nn.Identity())
+    with pytest.raises(ValueError, match="overlap"):
+        treefill_lama.LamaInpainter(device="cpu", tile=4.5, overlap=4.2)
+
+
 def test_shape_mismatch_raises():
     field, mask = _field_and_mask()
     with pytest.raises(ValueError, match="shape"):
@@ -174,6 +188,8 @@ def test_real_model_fills_square_hole_cpu():
     np.testing.assert_array_equal(out[~mask], field[~mask])
     assert inp.name == "lama"
     assert inp.version.startswith(f"big-lama@{treefill_lama.LAMA_MODEL_SHA256[:12]};torch=")
+    assert inp.version.endswith(";device=cpu")
+    assert 0.2 < out[mask].mean() < 0.8
 
     # End-to-end provenance: the real inpainter's name and version reach the output attrs.
     import xarray as xr

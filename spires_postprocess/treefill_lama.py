@@ -3,7 +3,8 @@
 The model is the public ``big-lama`` TorchScript export (LaMa, Suvorov et al.
 2022, Apache-2.0). It consumes a float32 ``(1, 3, H, W)`` image in [0, 1] and a
 ``(1, 1, H, W)`` mask in {0, 1} and returns a float image, so the field is fed
-to it as a normalised float and never quantised to 8 bits.
+to it as a normalised float and never quantised to 8 bits. The TorchScript export
+is fetched from the ``enesmsahin/simple-lama-inpainting`` GitHub release mirror.
 
 Requires the ``treefill`` extra (``pip install 'spires-postprocess[treefill]'``).
 """
@@ -58,7 +59,11 @@ def resolve_weights(
         path = Path(torch.hub.get_dir()) / "checkpoints" / "big-lama.pt"
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            torch.hub.download_url_to_file(LAMA_MODEL_URL, str(path), progress=False)
+            # torch checks hash_prefix before moving the download into place, so a
+            # corrupt or tampered file never lands in the cache.
+            torch.hub.download_url_to_file(
+                LAMA_MODEL_URL, str(path), hash_prefix=expected_sha256, progress=False
+            )
     if not path.exists():
         raise FileNotFoundError(f"LaMa weights not found: {path}")
     got = _sha256(path)
@@ -109,18 +114,22 @@ class LamaInpainter:
         overlap: int = 128,
         model_path: str | os.PathLike | None = None,
     ) -> None:
+        # Coerce before validating: a fractional tile or overlap would pass the range
+        # check and then give _windows a non-integer stride, which never terminates.
+        tile = int(tile)
+        overlap = int(overlap)
         if overlap < 0 or overlap >= tile:
             raise ValueError("overlap must satisfy 0 <= overlap < tile")
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
-        self.tile = int(tile)
-        self.overlap = int(overlap)
+        self.tile = tile
+        self.overlap = overlap
         self.weights_path, sha = resolve_weights(model_path)
         self.model = torch.jit.load(str(self.weights_path), map_location=self.device)
         self.model.eval()
         self.model.to(self.device)
-        self.version = f"big-lama@{sha[:12]};torch={torch.__version__}"
+        self.version = f"big-lama@{sha[:12]};torch={torch.__version__};device={self.device.type}"
 
     def _run_tile(self, x: np.ndarray, m: np.ndarray) -> np.ndarray:
         """Run the model on one normalised float32 tile; returns the same shape."""
@@ -148,7 +157,7 @@ class LamaInpainter:
 
         x = np.clip((np.nan_to_num(field, nan=vmin) - vmin) / (vmax - vmin), 0.0, 1.0).astype(np.float32)
         acc = np.zeros_like(x)
-        counts = np.zeros(x.shape, dtype=np.int32)
+        counts = np.zeros(x.shape, dtype=np.float32)
         for y0, y1 in _windows(x.shape[0], tile=self.tile, overlap=self.overlap):
             for x0, x1 in _windows(x.shape[1], tile=self.tile, overlap=self.overlap):
                 m = mask[y0:y1, x0:x1]
@@ -157,7 +166,9 @@ class LamaInpainter:
                 acc[y0:y1, x0:x1] += self._run_tile(x[y0:y1, x0:x1], m)
                 counts[y0:y1, x0:x1] += 1
         hit = counts > 0
-        out = x.copy()
-        out[hit] = acc[hit] / counts[hit]
-        out = out * (vmax - vmin) + vmin
-        return np.where(mask, out, field).astype(np.float32)
+        np.divide(acc, counts, out=acc, where=hit)
+        acc *= (vmax - vmin)
+        acc += vmin
+        out = field.copy()
+        np.copyto(out, acc, where=mask & hit)
+        return out

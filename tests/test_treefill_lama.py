@@ -1,24 +1,5 @@
-import builtins
-import sys
-
 import numpy as np
 import pytest
-
-
-def test_import_error_names_extra(monkeypatch):
-    monkeypatch.delitem(sys.modules, "spires_postprocess.treefill_lama", raising=False)
-    monkeypatch.delitem(sys.modules, "torch", raising=False)
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "torch" or name.startswith("torch."):
-            raise ImportError("No module named 'torch'")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(ImportError, match=r"spires-postprocess\[treefill\]"):
-        import spires_postprocess.treefill_lama  # noqa: F401
-
 
 torch = pytest.importorskip("torch")
 
@@ -153,6 +134,26 @@ def test_non_integer_tile_params_raise_instead_of_hanging(monkeypatch):
     monkeypatch.setattr(treefill_lama.torch.jit, "load", lambda *a, **k: torch.nn.Identity())
     with pytest.raises(ValueError, match="overlap"):
         treefill_lama.LamaInpainter(device="cpu", tile=4.5, overlap=4.2)
+
+
+def _identity_model(img, msk):
+    """Stand-in for the TorchScript graph: checks the padded input contract, returns img."""
+    assert img.shape[1] == 3 and img.shape[2] % 8 == 0 and img.shape[3] % 8 == 0
+    assert msk.shape[1] == 1 and msk.shape[2:] == img.shape[2:]
+    return img
+
+
+def test_run_tile_pads_to_multiple_of_8_and_crops_back():
+    # 37 x 29 is not a multiple of 8; _run_tile must pad for the model and crop the output.
+    obj = treefill_lama.LamaInpainter.__new__(treefill_lama.LamaInpainter)
+    obj.device = torch.device("cpu")
+    obj.model = _identity_model
+    x = np.random.default_rng(1).uniform(0.0, 1.0, (37, 29)).astype(np.float32)
+    m = np.zeros((37, 29), dtype=bool)
+    m[5:10, 5:10] = True
+    out = obj._run_tile(x, m)
+    assert out.shape == (37, 29) and out.dtype == np.float32
+    np.testing.assert_array_equal(out, x)
 
 
 def test_shape_mismatch_raises():

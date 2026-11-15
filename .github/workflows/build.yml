@@ -39,6 +39,6 @@ jobs:
       - name: Install import-time deps + smoke test
         run: |
           pip install numpy xarray scipy
-          pip install "spires-contract @ git+https://github.com/SPIReS-Organization/spires-contract@v1.0.0"
+          pip install "spires-contract @ git+https://github.com/SPIReS-Organization/spires-contract@v2.0.0"
           pip install --no-deps dist/*.whl
           python -c "import spires_postprocess; print('spires_postprocess', spires_postprocess.__version__)"

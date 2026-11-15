@@ -261,3 +261,21 @@ inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration
 (gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`, `tree_mask`,
 `shade_saturated_mask`. Water is a companion mask applied at the gate, never a NaN
 inside the chain; a missing land/water tile is an error, not a silent pass.
+
+### Tree-fill inpainting (`treefill` extra)
+
+`process(..., treefill_inpainter=...)` accepts any callable `(field, mask, vmin, vmax) -> field`.
+The in-process reference backend is `spires_postprocess.treefill_lama.LamaInpainter`
+(LaMa `big-lama` TorchScript weights, verified by sha256, fetched into torch's hub cache or
+read from `LAMA_MODEL`). Install it with `pip install 'spires-postprocess[treefill]'`:
+
+```python
+from spires_postprocess.treefill_lama import LamaInpainter
+
+inpainter = LamaInpainter()          # CUDA if available, else CPU
+processed = process(data, ..., treefill_inpainter=inpainter)
+```
+
+The field is normalised to `[vmin, vmax]` as float and processed in 4096-pixel tiles with a
+128-pixel overlap; pixels outside the mask are returned unchanged. The output attrs record
+`inpainter="lama"` and `inpainter_version="big-lama@<sha256[:12]>;torch=<version>;device=<cpu|cuda>"`.

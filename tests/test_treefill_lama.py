@@ -156,6 +156,38 @@ def test_run_tile_pads_to_multiple_of_8_and_crops_back():
     np.testing.assert_array_equal(out, x)
 
 
+def test_run_tile_pads_symmetrically_not_with_zeros():
+    """The pad must mirror the field, as simple-lama-inpainting's pad_img_to_modulo did.
+
+    Zero padding plants a hard dark band along the bottom/right of every tile whose
+    size is not a multiple of 8; the model's receptive field is global, so that band
+    biases fills tile-wide (measured RMSE 0.11 vs 0.005 against the original on a
+    667 x 667 HLS tile). The mask pad is irrelevant to the model as long as it is
+    boolean; the field pad must reproduce the edge.
+    """
+    seen = {}
+
+    def capture(img, msk):
+        seen["img"] = img.numpy()[0, 0].copy()
+        seen["msk"] = msk.numpy()[0, 0].copy()
+        return img
+
+    obj = treefill_lama.LamaInpainter.__new__(treefill_lama.LamaInpainter)
+    obj.device = torch.device("cpu")
+    obj.model = capture
+    x = np.arange(5 * 6, dtype=np.float32).reshape(5, 6) / 30
+    m = np.zeros((5, 6), dtype=bool)
+    m[1:3, 1:3] = True
+    obj._run_tile(x, m)
+    img = seen["img"]
+    assert img.shape == (8, 8)
+    np.testing.assert_array_equal(img[:5, :6], x)
+    # rows 5..7 mirror rows 4..2 (symmetric, edge included); cols 6..7 mirror cols 5..4
+    np.testing.assert_array_equal(img[5:, :6], x[4:1:-1, :])
+    np.testing.assert_array_equal(img[:5, 6:], x[:, 5:3:-1])
+    assert seen["msk"].shape == (8, 8)
+
+
 def test_shape_mismatch_raises():
     field, mask = _field_and_mask()
     with pytest.raises(ValueError, match="shape"):

@@ -136,8 +136,10 @@ class LamaInpainter:
         ny, nx = x.shape
         py = (-ny) % _MODULO
         px = (-nx) % _MODULO
-        xp = np.pad(x, ((0, py), (0, px)))
-        mp = np.pad(m, ((0, py), (0, px)))
+        # Mirror, not zero: a zero band along a tile edge is a hard dark feature that
+        # the model's global receptive field smears into every fill in the tile.
+        xp = np.pad(x, ((0, py), (0, px)), mode="symmetric")
+        mp = np.pad(m, ((0, py), (0, px)), mode="symmetric")
         img = torch.from_numpy(np.repeat(xp[None, None], 3, axis=1)).to(self.device)
         msk = torch.from_numpy(mp[None, None].astype(np.float32)).to(self.device)
         with torch.inference_mode():

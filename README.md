@@ -218,7 +218,7 @@ and never modifies the four base variables.
 import rioxarray
 from spires_postprocess import canopy_cover_fraction, cloud_mask_from_valid, process
 
-canopy = rioxarray.open_rasterio("/data/canopy/ucsb_1m_binary_canopy_cover.tif")
+canopy = rioxarray.open_rasterio("canopy_cover.tif")  # any binary or percent canopy-cover raster
 data.ancillary["canopy_fraction"] = canopy_cover_fraction(canopy, data.results["fsnow"])  # percent=True for 0-100 rasters
 out = process(
     data,
@@ -226,7 +226,7 @@ out = process(
     apply_shade_adjustment=True,
     tree_cover_threshold=0.10,
     cloud_mask=cloud_mask_from_valid(data.scene["valid"], data.results["fsnow"]),
-    land_water_directory="/data/watermask",
+    land_water_directory="landWater2020/",  # directory of 30-degree land/water tiles
     treefill_inpainter=my_inpainter,  # optional: any (field, mask, vmin, vmax) -> field callable
     gate_products=True,
     product_fsnow_variable="canopy_adjusted_fsnow",

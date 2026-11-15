@@ -155,3 +155,19 @@ def test_windows_cover_array_and_respect_tile():
     assert wins[0] == (0, 128) and wins[-1] == (172, 300)
     assert all(b - a == 128 for a, b in wins)
     assert list(treefill_lama._windows(100, tile=128, overlap=32)) == [(0, 100)]
+
+
+@pytest.mark.slow
+def test_real_model_fills_square_hole_cpu():
+    inp = treefill_lama.LamaInpainter(device="cpu", tile=256, overlap=32)
+    yy, xx = np.mgrid[0:256, 0:256]
+    field = np.where(((yy // 32) + (xx // 32)) % 2 == 0, 0.8, 0.2).astype(np.float32)
+    mask = np.zeros_like(field, dtype=bool)
+    mask[104:152, 104:152] = True
+    out = inp(field, mask, 0.0, 1.0)
+    assert out.dtype == np.float32
+    assert np.all(np.isfinite(out[mask]))
+    assert out[mask].min() >= 0.0 and out[mask].max() <= 1.0
+    np.testing.assert_array_equal(out[~mask], field[~mask])
+    assert inp.name == "lama"
+    assert inp.version.startswith(f"big-lama@{treefill_lama.LAMA_MODEL_SHA256[:12]};torch=")

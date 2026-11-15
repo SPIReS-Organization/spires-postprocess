@@ -38,6 +38,7 @@ where = ["./"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["./"]
+markers = ["slow: needs model weights and minutes of CPU"]
 
 [tool.setuptools_scm]
 version_scheme = "post-release"

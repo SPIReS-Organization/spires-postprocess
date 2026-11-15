@@ -257,7 +257,8 @@ when torch sees one (pass `inference_device="cpu"` to force the CPU); the record
 says which. MODIS/VIIRS (250–500 m) are outside the model's validity.
 
 Output layers: `canopy_adjusted_fsnow`, `shade_adjusted_fsnow`, `*_treefilled` (when an
-inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration_product`
-(gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`, `tree_mask`,
-`shade_saturated_mask`. Water is a companion mask applied at the gate, never a NaN
-inside the chain; a missing land/water tile is an error, not a silent pass.
+inpainter is given), `fsnow_product` (masked where cloud, water, saturated shade or — when
+no inpainter ran — tree cover), `grain_radius_product` and `lap_concentration_product`
+(same masks, plus gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`,
+`tree_mask`, `shade_saturated_mask`. Water is a companion mask applied at the gate, never a
+NaN inside the chain; a missing land/water tile is an error, not a silent pass.

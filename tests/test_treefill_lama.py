@@ -88,6 +88,7 @@ def _fake_inpainter(tile, overlap, fill=0.25):
     def run_tile(x, m):
         obj.calls += 1
         assert x.dtype == np.float32 and m.dtype == bool and x.shape == m.shape
+        assert m.any(), "mask-free tile must not reach the model"
         out = x.copy()
         out[m] = fill
         return out
@@ -134,8 +135,10 @@ def test_mask_free_tiles_are_skipped():
     field, mask = _field_and_mask()
     inp = _fake_inpainter(tile=128, overlap=32)
     inp(field, mask, 0.0, 1.0)
-    # 300x260 with tile 128 / stride 96 -> 3 x 3 = 9 windows; only those touching a hole run
-    assert 0 < inp.calls < 9
+    # 300x260 with tile 128 / stride 96 -> 3 x 3 = 9 windows; the 3 x 3 grid is
+    # ys [0,96,172] x xs [0,96,132]. Holes (40:90,50:120) and (200:250,180:240) touch
+    # exactly 6 of the 9 windows, so the other 3 are mask-free and must be skipped.
+    assert inp.calls == 6
 
 
 def test_shape_mismatch_raises():
@@ -171,3 +174,22 @@ def test_real_model_fills_square_hole_cpu():
     np.testing.assert_array_equal(out[~mask], field[~mask])
     assert inp.name == "lama"
     assert inp.version.startswith(f"big-lama@{treefill_lama.LAMA_MODEL_SHA256[:12]};torch=")
+
+    # End-to-end provenance: the real inpainter's name and version reach the output attrs.
+    import xarray as xr
+
+    from spires_postprocess.treefill import treefill_results
+
+    coords = {"y": np.arange(256), "x": np.arange(256)}
+    ds = xr.Dataset(
+        {
+            "fsnow": xr.DataArray(field, dims=("y", "x"), coords=coords),
+            "grain_radius": xr.DataArray(field * 500.0, dims=("y", "x"), coords=coords),
+            "lap_concentration": xr.DataArray(field * 100.0, dims=("y", "x"), coords=coords),
+        }
+    )
+    tree = xr.DataArray(mask, dims=("y", "x"), coords=coords, name="tree_mask")
+    tree.attrs = {"cover_threshold": 0.1, "dilate_cells": 1}
+    out = treefill_results(ds, fsnow_variable="fsnow", tree_mask=tree, inpainter=inp)
+    assert out["fsnow_treefilled"].attrs["inpainter"] == "lama"
+    assert out["fsnow_treefilled"].attrs["inpainter_version"] == inp.version

@@ -66,7 +66,7 @@ def treefill_results(
             or getattr(inpainter, "__name__", None)
             or type(inpainter).__name__
         ),
-        "inpainter_version": str(getattr(inpainter, "version", "")),
+        "inpainter_version": str(getattr(inpainter, "version", None) or ""),
         "cover_threshold": tree_mask.attrs.get("cover_threshold", "unknown"),
         "dilate_cells": tree_mask.attrs.get("dilate_cells", "unknown"),
         "treefill_caveat": TREEFILL_CAVEAT,

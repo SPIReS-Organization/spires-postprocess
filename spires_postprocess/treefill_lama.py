@@ -67,3 +67,97 @@ def resolve_weights(
             f"LaMa weights sha256 mismatch for {path}: got {got}, expected {expected_sha256}"
         )
     return path, got
+
+
+def _windows(n: int, *, tile: int, overlap: int):
+    """Yield ``(start, stop)`` windows of width ``tile`` covering ``[0, n)``.
+
+    Stride is ``tile - overlap``; the last window is shifted inward so every
+    window is exactly ``tile`` wide. An array shorter than ``tile`` is one window.
+    """
+    if n <= tile:
+        yield 0, n
+        return
+    stride = tile - overlap
+    start = 0
+    while True:
+        stop = start + tile
+        if stop >= n:
+            yield n - tile, n
+            return
+        yield start, stop
+        start += stride
+
+
+class LamaInpainter:
+    """Callable ``(field, mask, vmin, vmax) -> field`` backed by LaMa.
+
+    ``field`` is a 2-D float array (NaN allowed), ``mask`` a 2-D bool array
+    (True = fill). The field is normalised to [0, 1] over ``[vmin, vmax]``,
+    processed in ``tile``-sized windows overlapping by ``overlap`` pixels
+    (overlaps averaged), un-normalised, and composited so pixels outside the
+    mask are returned verbatim. Windows with no masked pixel are not run.
+    """
+
+    name = "lama"
+
+    def __init__(
+        self,
+        device: str | torch.device | None = None,
+        *,
+        tile: int = 4096,
+        overlap: int = 128,
+        model_path: str | os.PathLike | None = None,
+    ) -> None:
+        if overlap < 0 or overlap >= tile:
+            raise ValueError("overlap must satisfy 0 <= overlap < tile")
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
+        self.tile = int(tile)
+        self.overlap = int(overlap)
+        self.weights_path, sha = resolve_weights(model_path)
+        self.model = torch.jit.load(str(self.weights_path), map_location=self.device)
+        self.model.eval()
+        self.model.to(self.device)
+        self.version = f"big-lama@{sha[:12]};torch={torch.__version__}"
+
+    def _run_tile(self, x: np.ndarray, m: np.ndarray) -> np.ndarray:
+        """Run the model on one normalised float32 tile; returns the same shape."""
+        ny, nx = x.shape
+        py = (-ny) % _MODULO
+        px = (-nx) % _MODULO
+        xp = np.pad(x, ((0, py), (0, px)))
+        mp = np.pad(m, ((0, py), (0, px)))
+        img = torch.from_numpy(np.repeat(xp[None, None], 3, axis=1)).to(self.device)
+        msk = torch.from_numpy(mp[None, None].astype(np.float32)).to(self.device)
+        with torch.inference_mode():
+            out = self.model(img, msk)
+        return out[0, 0].detach().cpu().numpy()[:ny, :nx].astype(np.float32)
+
+    def __call__(self, field, mask, vmin: float, vmax: float) -> np.ndarray:
+        field = np.asarray(field, dtype=np.float32)
+        mask = np.asarray(mask, dtype=bool)
+        if field.ndim != 2 or mask.shape != field.shape:
+            raise ValueError(f"field and mask must be 2-D with equal shape; got {field.shape} and {mask.shape}")
+        vmin, vmax = float(vmin), float(vmax)
+        if not vmax > vmin:
+            raise ValueError(f"vmax must exceed vmin; got vmin={vmin}, vmax={vmax}")
+        if not mask.any():
+            return field.copy()
+
+        x = np.clip((np.nan_to_num(field, nan=vmin) - vmin) / (vmax - vmin), 0.0, 1.0).astype(np.float32)
+        acc = np.zeros_like(x)
+        counts = np.zeros(x.shape, dtype=np.int32)
+        for y0, y1 in _windows(x.shape[0], tile=self.tile, overlap=self.overlap):
+            for x0, x1 in _windows(x.shape[1], tile=self.tile, overlap=self.overlap):
+                m = mask[y0:y1, x0:x1]
+                if not m.any():
+                    continue
+                acc[y0:y1, x0:x1] += self._run_tile(x[y0:y1, x0:x1], m)
+                counts[y0:y1, x0:x1] += 1
+        hit = counts > 0
+        out = x.copy()
+        out[hit] = acc[hit] / counts[hit]
+        out = out * (vmax - vmin) + vmin
+        return np.where(mask, out, field).astype(np.float32)

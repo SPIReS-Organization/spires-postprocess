@@ -205,10 +205,11 @@ def apply_snow_fraction_adjustments(
                 "nadir_full_shade takes no sensor or terrain geometry; omit "
                 "sensor_zenith, sensor_azimuth, slope, and aspect"
             )
-        if not nadir and (slope is None or aspect is None or sensor_azimuth is None):
-            raise ValueError("sensor-specific canopy correction requires canopy, slope, aspect, and sensor azimuth")
-        if average_vertical_crown_radius != 4.644 or average_horizontal_crown_radius != 1.72:
-            raise ValueError("selected canopy policies require the evaluated crown radii 4.644 and 1.72")
+        if not nadir:
+            if slope is None or aspect is None or sensor_azimuth is None:
+                raise ValueError("sensor-specific canopy correction requires canopy, slope, aspect, and sensor azimuth")
+            if average_vertical_crown_radius != 4.644 or average_horizontal_crown_radius != 1.72:
+                raise ValueError("selected canopy policies require the evaluated crown radii 4.644 and 1.72")
     elif canopy_correction_policy is not None:
         raise ValueError("canopy_correction_policy requires canopy_fraction")
     if canopy_fraction is None and ice_fraction is None:
@@ -259,13 +260,14 @@ def apply_snow_fraction_adjustments(
             "canopy_included": 1,
             "ice_included": 0,
             "canopy_source": viewable_canopy.attrs.get("source", "canopy_fraction"),
-            "average_vertical_crown_radius": average_vertical_crown_radius,
-            "average_horizontal_crown_radius": average_horizontal_crown_radius,
             "terrain_geometry_used": viewable_canopy.attrs.get(
                 "terrain_geometry_used", 0
             ),
             "obscuration_upper_bound": _OBSCURATION_LIMIT,
         }
+        if not nadir:
+            canopy_attrs["average_vertical_crown_radius"] = average_vertical_crown_radius
+            canopy_attrs["average_horizontal_crown_radius"] = average_horizontal_crown_radius
         canopy = _prepare_fraction_layer(canopy_fraction, fsnow, name="canopy_fraction")
         is_modis = canopy_correction_policy in _FULL_SHADE_POLICIES
         rho = np.float32(0.1 if is_modis else 0.5)

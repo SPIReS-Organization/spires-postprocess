@@ -112,3 +112,25 @@ def test_treefill_rejects_nonpositive_scale(results, tree):
     results = results.assign(grain_radius=zero_grain)
     with pytest.raises(ValueError, match="positive"):
         treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=constant_inpainter(0.5))
+
+
+class _NamedInpainter:
+    name = "lama"
+    version = "big-lama@deadbeef0000;torch=0.0"
+
+    def __call__(self, field, mask, vmin, vmax):
+        out = field.copy()
+        out[mask] = 0.5 * (vmin + vmax)
+        return out
+
+
+def test_provenance_uses_name_and_version_attributes(results, tree):
+    out = treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=_NamedInpainter())
+    assert out["fsnow_treefilled"].attrs["inpainter"] == "lama"
+    assert out["fsnow_treefilled"].attrs["inpainter_version"] == "big-lama@deadbeef0000;torch=0.0"
+
+
+def test_provenance_falls_back_to_dunder_name(results, tree):
+    out = treefill_results(results, fsnow_variable="fsnow", tree_mask=tree, inpainter=constant_inpainter(0.3))
+    assert out["fsnow_treefilled"].attrs["inpainter"] == "constant_0.3"
+    assert out["fsnow_treefilled"].attrs["inpainter_version"] == ""

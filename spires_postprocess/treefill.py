@@ -4,7 +4,8 @@ The core package never imports torch or talks to a network. ``Inpainter`` is any
 callable ``(field, mask, vmin, vmax) -> field`` on float32 ``(y, x)`` arrays where
 ``mask`` is boolean (True = hole); callers supply their own (a LaMa wrapper, a
 service client, a test stub). Pixels outside ``mask`` are restored from the
-source regardless of what the callable returns.
+source regardless of what the callable returns. An inpainter may expose ``name``
+and ``version`` attributes; they are recorded in the output attrs.
 """
 
 from __future__ import annotations
@@ -60,7 +61,12 @@ def treefill_results(
     hole = np.asarray(tree_mask.values, dtype=bool)
 
     common_attrs = {
-        "inpainter": getattr(inpainter, "__name__", repr(inpainter)),
+        "inpainter": str(
+            getattr(inpainter, "name", None)
+            or getattr(inpainter, "__name__", None)
+            or type(inpainter).__name__
+        ),
+        "inpainter_version": str(getattr(inpainter, "version", None) or ""),
         "cover_threshold": tree_mask.attrs.get("cover_threshold", "unknown"),
         "dilate_cells": tree_mask.attrs.get("dilate_cells", "unknown"),
         "treefill_caveat": TREEFILL_CAVEAT,

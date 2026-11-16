@@ -2,6 +2,13 @@
 
 __version__ = "0.1.0"
 
+from spires_postprocess.cloudmask import (
+    Classifier,
+    classify_clouds,
+    cloud_mask_from_classes,
+    omnicloudmask_classifier,
+    rgnir_stack,
+)
 from spires_postprocess.gate import PRODUCT_MIN_FSNOW, gate_products
 from spires_postprocess.lookup import (
     load_albedo_lookup,
@@ -31,6 +38,9 @@ __all__ = [
     "apply_snow_fraction_adjustments",
     "calculate_viewable_canopy_fraction",
     "canopy_cover_fraction",
+    "Classifier",
+    "classify_clouds",
+    "cloud_mask_from_classes",
     "cloud_mask_from_valid",
     "compute_delta_vis",
     "compute_radiative_forcing",
@@ -40,8 +50,10 @@ __all__ = [
     "land_mask_from_tiles",
     "load_albedo_lookup",
     "load_forcing_lookup",
+    "omnicloudmask_classifier",
     "process",
     "PRODUCT_MIN_FSNOW",
+    "rgnir_stack",
     "shade_adjusted_fsnow",
     "shade_saturated_mask",
     "tree_mask",

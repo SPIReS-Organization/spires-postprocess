@@ -218,7 +218,7 @@ and never modifies the four base variables.
 import rioxarray
 from spires_postprocess import canopy_cover_fraction, cloud_mask_from_valid, process
 
-canopy = rioxarray.open_rasterio("/data/canopy/ucsb_1m_binary_canopy_cover.tif")
+canopy = rioxarray.open_rasterio("canopy_cover.tif")  # any binary or percent canopy-cover raster
 data.ancillary["canopy_fraction"] = canopy_cover_fraction(canopy, data.results["fsnow"])  # percent=True for 0-100 rasters
 out = process(
     data,
@@ -226,12 +226,35 @@ out = process(
     apply_shade_adjustment=True,
     tree_cover_threshold=0.10,
     cloud_mask=cloud_mask_from_valid(data.scene["valid"], data.results["fsnow"]),
-    land_water_directory="/data/watermask",
+    land_water_directory="landWater2020/",  # directory of 30-degree land/water tiles
     treefill_inpainter=my_inpainter,  # optional: any (field, mask, vmin, vmax) -> field callable
     gate_products=True,
     product_fsnow_variable="canopy_adjusted_fsnow",
 )
 ```
+
+### Cloud mask from OmniCloudMask
+
+`cloud_mask_from_valid` only inverts the provider QA (`valid`). For Landsat, HLS and
+Sentinel-2 (10–50 m) an alternative is [OmniCloudMask](https://github.com/DPIRD-DMA/OmniCloudMask),
+a sensor-agnostic Red/Green/NIR CNN. Install the pinned reference backend with
+`pip install 'spires-postprocess[cloudmask]'` (adds torch); the core package never imports it.
+
+```python
+from spires_postprocess import classify_clouds, cloud_mask_from_classes, omnicloudmask_classifier
+
+classes = classify_clouds(data.scene["reflectance"], classifier=omnicloudmask_classifier())
+# uint8: 0 clear, 1 thick cloud, 2 thin cloud, 3 cloud shadow, 255 no observation
+cloud_mask = cloud_mask_from_classes(classes, data.results["fsnow"])   # bool, True = excluded
+out = process(data, ..., cloud_mask=cloud_mask, gate_products=True)
+```
+
+`classify_clouds` accepts any `(3, y, x) uint16 -> (y, x) uint8` callable as `classifier`,
+so a GPU service can stand in for the in-process backend; provenance attrs
+(`cloud_model`, `cloud_model_version`, `omnicloudmask_version`, `cloud_backend`) are copied
+from the classifier's `provenance` mapping when it has one. `omnicloudmask_classifier()` runs on the GPU
+when torch sees one (pass `inference_device="cpu"` to force the CPU); the recorded `cloud_backend`
+says which. MODIS/VIIRS (250–500 m) are outside the model's validity.
 
 Output layers: `canopy_adjusted_fsnow`, `shade_adjusted_fsnow`, `*_treefilled` (when an
 inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration_product`

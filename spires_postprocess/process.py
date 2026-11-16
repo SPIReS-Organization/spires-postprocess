@@ -18,10 +18,16 @@ from spires_postprocess.lookup import (
     load_albedo_lookup,
     load_forcing_lookup,
 )
+from spires_postprocess._xarray_validation import require_matching_coords
+from spires_postprocess.gate import gate_products as _gate_products
+from spires_postprocess.masks import land_mask_from_tiles, mask_to_uint8, tree_mask
+from spires_postprocess.shade import shade_adjusted_fsnow, shade_saturated_mask
 from spires_postprocess.snow_fraction import (
+    NADIR_FULL_SHADE,
     validate_canopy_correction_policy,
     apply_snow_fraction_adjustments,
 )
+from spires_postprocess.treefill import Inpainter, treefill_results
 from spires_postprocess.snow_radiative import (
     compute_delta_vis,
     compute_radiative_forcing,
@@ -59,6 +65,13 @@ def process(
     average_horizontal_crown_radius: float = 1.72,
     canopy_correction_policy: str | None = None,
     sensor: str | None = None,
+    apply_shade_adjustment: bool = False,
+    tree_cover_threshold: float | None = None,
+    cloud_mask: xr.DataArray | None = None,
+    land_water_directory: str | Path | None = None,
+    treefill_inpainter: Inpainter | None = None,
+    gate_products: bool = False,
+    product_fsnow_variable: str | None = None,
 ) -> SpiresData:
     """Apply explicitly selected postprocessing operations.
 
@@ -69,6 +82,18 @@ def process(
     operation fails with an actionable error when one is absent.
     Canopy correction additionally requires an explicit sensor and matching
     policy; this low-level API never guesses a policy from the data arrays.
+
+    The Landsat / Sentinel-2 / HLS chain is default-off and explicit:
+    ``apply_shade_adjustment`` adds ``shade_adjusted_fsnow`` and a
+    ``shade_saturated_mask``; ``tree_cover_threshold`` adds a dilated
+    ``tree_mask`` from ``data.ancillary['canopy_fraction']``;
+    ``treefill_inpainter`` (requires the tree mask and
+    ``product_fsnow_variable``) adds ``*_treefilled`` layers; ``gate_products``
+    (requires ``cloud_mask``, ``land_water_directory`` and
+    ``product_fsnow_variable``) adds ``fsnow_product``,
+    ``grain_radius_product``, ``lap_concentration_product`` and uint8 companion
+    masks. When treefill runs, the gate reads the treefilled layers and keeps
+    ``tree_mask`` as a companion rather than applying it.
     """
     options = {
         "apply_canopy_correction": apply_canopy_correction,
@@ -76,6 +101,8 @@ def process(
         "calculate_albedo": calculate_albedo,
         "calculate_delta_vis": calculate_delta_vis,
         "calculate_radiative_forcing": calculate_radiative_forcing,
+        "apply_shade_adjustment": apply_shade_adjustment,
+        "gate_products": gate_products,
     }
     for name, value in options.items():
         if type(value) is not bool:
@@ -84,16 +111,31 @@ def process(
         validate_canopy_correction_policy(canopy_correction_policy, sensor)
     elif canopy_correction_policy is not None:
         raise ValueError("canopy_correction_policy requires apply_canopy_correction=True")
+    if gate_products:
+        if cloud_mask is None:
+            raise ValueError("cloud_mask is required when gate_products=True")
+        if land_water_directory is None:
+            raise ValueError("land_water_directory is required when gate_products=True")
+        if product_fsnow_variable is None:
+            raise ValueError("product_fsnow_variable is required when gate_products=True")
+    elif product_fsnow_variable is not None and treefill_inpainter is None:
+        raise ValueError("product_fsnow_variable requires gate_products=True or treefill_inpainter")
+    if treefill_inpainter is not None:
+        if tree_cover_threshold is None:
+            raise ValueError("treefill_inpainter requires tree_cover_threshold: nothing to fill")
+        if product_fsnow_variable is None:
+            raise ValueError("treefill_inpainter requires product_fsnow_variable")
 
     validate_spires_data(data)
     if data.results is None:
         raise ValueError("data.results is required for postprocessing")
     validate_results(data.results, scene=data.scene)
 
-    if not any(options.values()):
+    if not any(options.values()) and tree_cover_threshold is None:
         return data
 
     original_results = data.results
+    base_snapshot = original_results[list(_BASE_RESULT_NAMES)].copy(deep=True)
     updated = original_results.copy(deep=False)
 
     if apply_canopy_correction or apply_ice_adjustment:
@@ -121,7 +163,7 @@ def process(
         sensor_azimuth = None
         slope = None
         aspect = None
-        if apply_canopy_correction:
+        if apply_canopy_correction and canopy_correction_policy != NADIR_FULL_SHADE:
             sensor_zenith = _require_variable(
                 data.scene,
                 "sensor_zenith",
@@ -248,10 +290,72 @@ def process(
                 lookup=lookup,
             )
 
+    tree = None
+    if tree_cover_threshold is not None:
+        canopy = _require_variable(
+            _require_ancillary(data), "canopy_fraction", owner="data.ancillary"
+        )
+        if canopy.dims != ("y", "x"):
+            raise ValueError(
+                "data.ancillary['canopy_fraction'] must have dimensions ('y', 'x'); "
+                f"got {canopy.dims}"
+            )
+        require_matching_coords(
+            canopy,
+            updated["fsnow"],
+            ("y", "x"),
+            label="data.ancillary['canopy_fraction']",
+            target_label="results",
+        )
+        tree = tree_mask(canopy, threshold=tree_cover_threshold)
+
+    saturated = None
+    if apply_shade_adjustment:
+        updated["shade_adjusted_fsnow"] = shade_adjusted_fsnow(
+            updated["fsnow"], updated["fshade"]
+        )
+        saturated = shade_saturated_mask(updated["fshade"])
+
+    treefilled = False
+    if treefill_inpainter is not None:
+        _require_product_variable(updated, product_fsnow_variable)
+        updated = treefill_results(
+            updated,
+            fsnow_variable=product_fsnow_variable,
+            tree_mask=tree,
+            inpainter=treefill_inpainter,
+        )
+        treefilled = True
+
+    if gate_products:
+        _require_product_variable(updated, product_fsnow_variable)
+        land =land_mask_from_tiles(
+            _georeferenced(updated["fsnow"], data.scene), land_water_directory
+        )
+        gated = _gate_products(
+            updated,
+            fsnow_variable="fsnow_treefilled" if treefilled else product_fsnow_variable,
+            grain_variable="grain_radius_treefilled" if treefilled else "grain_radius",
+            lap_variable="lap_concentration_treefilled" if treefilled else "lap_concentration",
+            land_mask=land,
+            cloud_mask=cloud_mask,
+            tree_mask=None if treefilled else tree,
+            shade_saturated_mask=saturated,
+        )
+        for name, layer in gated.data_vars.items():
+            updated[name] = layer
+        if treefilled:
+            updated["tree_mask"] = mask_to_uint8(tree)
+    else:
+        if tree is not None:
+            updated["tree_mask"] = mask_to_uint8(tree)
+        if saturated is not None:
+            updated["shade_saturated_mask"] = mask_to_uint8(saturated)
+
     updated = updated.assign_coords(
         {name: coordinate for name, coordinate in original_results.coords.items()}
     )
-    _require_unchanged_base_results(original_results, updated)
+    _require_unchanged_base_results(base_snapshot, updated)
     validate_results(updated, scene=data.scene)
     return data.assign_results(updated)
 
@@ -271,6 +375,28 @@ def _require_variable(
     if name not in dataset:
         raise ValueError(f"{owner} is missing required variable {name!r}")
     return dataset[name]
+
+
+def _require_product_variable(updated: xr.Dataset, product_fsnow_variable: str) -> None:
+    if product_fsnow_variable not in updated:
+        raise ValueError(
+            f"product_fsnow_variable {product_fsnow_variable!r} is not in results; "
+            "enable the adjustment that produces it"
+        )
+
+
+def _georeferenced(target: xr.DataArray, scene: xr.Dataset) -> xr.DataArray:
+    """Return ``target`` carrying a CRS, borrowing the scene's when results lack one."""
+    import rioxarray  # noqa: F401  registers the .rio accessor
+
+    if target.rio.crs is not None:
+        return target
+    if scene.rio.crs is None:
+        raise ValueError(
+            "land/water masking needs a CRS on data.results or data.scene "
+            "(use .rio.write_crs)"
+        )
+    return target.rio.write_crs(scene.rio.crs)
 
 
 def _altitude_km(dem: xr.DataArray) -> xr.DataArray:

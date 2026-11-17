@@ -222,3 +222,51 @@ def test_a_time_axis_longer_than_the_index_dtype_is_rejected():
     )
     with pytest.raises(ValueError, match="127"):
         temporal.fill_time_gaps(da, MAX_GAP)
+
+
+def test_extrapolate_matches_xarray_on_random_nan_patterns():
+    rng = np.random.default_rng(5)
+    values = rng.uniform(0.0, 1.0, (7, 40, 50)).astype("float32")
+    values[rng.uniform(size=values.shape) < 0.45] = np.nan
+    assert_matches_oracle(cube(values), extrapolate=True)
+
+
+def test_extrapolate_fills_an_edge_run_within_max_gap_linearly():
+    nan = np.nan
+    # Valid at days 10 and 15 (values 2, 3): slope 0.2/day; leading run is
+    # 10 days wide (<= 14), so day 0 -> 0.0 and day 5 -> 1.0.
+    out = assert_matches_oracle(cube([nan, nan, 2.0, 3.0, 4.0, 5.0, 6.0]), extrapolate=True).ravel()
+    assert out[0] == pytest.approx(0.0, abs=1e-5)
+    assert out[1] == pytest.approx(1.0, abs=1e-5)
+
+
+def test_extrapolate_honours_max_gap_on_the_edges_too():
+    nan = np.nan
+    # Last valid at day 20; trailing run spans 25 days > 14 -> persistence.
+    out = assert_matches_oracle(cube([1.0, 2.0, 3.0, 4.0, 5.0, nan, nan]), extrapolate=True).ravel()
+    assert out[5] == pytest.approx(5.0)
+    assert out[6] == pytest.approx(5.0)
+
+
+def test_extrapolate_edge_limit_is_inclusive():
+    nan = np.nan
+    # Leading run: first valid at day 15, so the run is exactly 15 days.
+    da = cube([nan, nan, nan, 4.0, 5.0, 6.0, 7.0])
+    at_15 = assert_matches_oracle(da, datetime.timedelta(days=15), extrapolate=True).ravel()
+    at_14 = assert_matches_oracle(da, datetime.timedelta(days=14), extrapolate=True).ravel()
+    assert at_15[0] == pytest.approx(1.0, abs=1e-5)  # line through (15,4),(20,5)
+    assert at_14[0] == pytest.approx(4.0)  # persistence
+
+
+def test_extrapolate_falls_back_to_persistence_without_two_samples():
+    nan = np.nan
+    out = temporal.fill_time_gaps(cube([nan, nan, 3.0, nan, nan, nan, nan]), MAX_GAP, extrapolate=True)
+    np.testing.assert_allclose(out.values.ravel(), 3.0)
+    empty = temporal.fill_time_gaps(cube([nan] * 7), MAX_GAP, extrapolate=True)
+    assert np.isnan(empty.values).all(), f"invented data from nothing: {empty.values}"
+
+
+def test_extrapolate_leaves_a_full_series_alone():
+    values = np.linspace(0.0, 1.0, 7, dtype="float32")
+    out = temporal.fill_time_gaps(cube(values), MAX_GAP, extrapolate=True)
+    np.testing.assert_allclose(out.values.ravel(), values)

@@ -47,6 +47,8 @@ def _day_offsets(values) -> np.ndarray:
     arr = np.asarray(values)
     if arr.dtype == object:
         arr = np.array([np.datetime64(v) for v in arr])
+    if not np.issubdtype(arr.dtype, np.datetime64):
+        raise TypeError(f"time coordinate must be datetime-like, got dtype {arr.dtype}")
     seconds = arr.astype("datetime64[s]").astype("int64")
     return ((seconds - seconds[0]) / 86400.0).astype("float32")
 

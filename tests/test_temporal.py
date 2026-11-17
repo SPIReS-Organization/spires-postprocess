@@ -59,3 +59,9 @@ def test_matches_xarray_on_random_nan_patterns():
     values = rng.uniform(0.0, 1.0, (7, 40, 50)).astype("float32")
     values[rng.uniform(size=values.shape) < 0.45] = np.nan
     assert_matches_oracle(cube(values))
+
+
+def test_a_numeric_time_axis_is_rejected():
+    da = cube([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0]).assign_coords(time=np.arange(7) * 5)
+    with pytest.raises(TypeError, match="datetime-like"):
+        temporal.fill_time_gaps(da, MAX_GAP)

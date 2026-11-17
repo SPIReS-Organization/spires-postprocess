@@ -16,6 +16,7 @@ from spires_postprocess.snow_radiative import (
     compute_radiative_forcing,
     compute_snow_albedo,
 )
+from spires_postprocess.temporal import DEFAULT_MAX_GAP, fill_time_gaps
 
 __all__ = [
     "__version__",
@@ -24,6 +25,8 @@ __all__ = [
     "compute_delta_vis",
     "compute_radiative_forcing",
     "compute_snow_albedo",
+    "DEFAULT_MAX_GAP",
+    "fill_time_gaps",
     "load_albedo_lookup",
     "load_forcing_lookup",
     "process",

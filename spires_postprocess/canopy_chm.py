@@ -112,3 +112,49 @@ def canopy_raster_from_chm(
         "height_threshold_m": float(height_threshold_m),
     }
     return out
+
+
+def open_meta_chm() -> xr.DataArray:
+    """Open the Meta CHM v2 native layer lazily as a georeferenced ``(y, x)`` DataArray.
+
+    Anonymous S3; the retry policy is set explicitly because the store's own
+    config disables retries. Coordinates are pixel centres derived from the
+    ``GeoTransform`` the store records on ``spatial_ref``.
+    """
+    import rioxarray  # noqa: F401  registers the .rio accessor
+
+    cfg = icechunk.RepositoryConfig.default()
+    cfg.storage = icechunk.StorageSettings(
+        retries=icechunk.StorageRetriesSettings(
+            max_tries=CHM_MAX_TRIES,
+            initial_backoff_ms=CHM_INITIAL_BACKOFF_MS,
+            max_backoff_ms=CHM_MAX_BACKOFF_MS,
+        )
+    )
+    cfg.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(
+            CHM_CONTAINER_PREFIX, icechunk.s3_store(region=CHM_REGION, anonymous=True)
+        )
+    )
+    repo = icechunk.Repository.open(
+        icechunk.s3_storage(
+            bucket=CHM_BUCKET, prefix=CHM_REPO_PREFIX, region=CHM_REGION, anonymous=True
+        ),
+        config=cfg,
+        authorize_virtual_chunk_access=icechunk.containers_credentials(
+            {CHM_CONTAINER_PREFIX: icechunk.s3_anonymous_credentials()}
+        ),
+    )
+    tree = xr.open_datatree(repo.readonly_session("main").store, engine="zarr")
+    ds = tree[CHM_GROUP].to_dataset()
+    if CHM_VARIABLE not in ds:
+        raise ValueError(f"store group {CHM_GROUP!r} has no {CHM_VARIABLE!r} variable")
+
+    origin_x, px_w, _, origin_y, _, px_h = (
+        float(v) for v in ds["spatial_ref"].attrs["GeoTransform"].split()
+    )
+    ny, nx = ds[CHM_VARIABLE].shape
+    x = origin_x + (np.arange(nx) + 0.5) * px_w
+    y = origin_y + (np.arange(ny) + 0.5) * px_h
+    chm = ds[CHM_VARIABLE].assign_coords(y=("y", y), x=("x", x))
+    return chm.rio.write_crs(CHM_CRS)

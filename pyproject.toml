@@ -34,6 +34,9 @@ where = ["./"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["./"]
+markers = [
+    "slow: network-bound tests (live public-store access); deselect with -m 'not slow'",
+]
 
 [tool.setuptools_scm]
 version_scheme = "post-release"

@@ -94,3 +94,24 @@ def test_target_outside_the_chm_is_an_error():
     far = far.rio.write_crs(canopy_chm.CHM_CRS)
     with pytest.raises(ValueError, match="overlap"):
         canopy_chm.canopy_raster_from_chm(height_raster(heights), far)
+
+
+@pytest.mark.slow
+def test_live_store_window_over_a_forested_point():
+    """Network: opens the public store and windows ~1 km around a conifer slope."""
+    import rioxarray  # noqa: F401
+
+    chm = canopy_chm.open_meta_chm()
+    assert chm.dims == ("y", "x")
+    assert chm.rio.crs.to_epsg() == 3857
+    # ~1 km in EPSG:3857 near (-119.0, 37.63); 30 m target cells.
+    n = 33
+    x = -13_247_000.0 + 30.0 * (np.arange(n) + 0.5)
+    y = 4_538_000.0 - 30.0 * (np.arange(n) + 0.5)
+    target = xr.DataArray(np.zeros((n, n), "float32"), dims=("y", "x"), coords={"y": y, "x": x})
+    target = target.rio.write_crs("EPSG:3857")
+    raster = canopy_chm.canopy_raster_from_chm(chm, target)
+    frac = canopy_cover_fraction(raster, target)
+    assert frac.shape == (n, n)
+    assert np.isfinite(frac.values).all()
+    assert 0.0 < float(frac.mean()) < 1.0, "expected a mixed forest/open window"

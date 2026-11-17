@@ -256,7 +256,9 @@ fraction = canopy_cover_fraction(binary, results["fsnow"])
 ```
 
 Install with `pip install 'spires-postprocess[chm]'`. The open sets an explicit
-retry policy because the published store disables retries, and
+retry policy for repository storage (snapshot, manifest and config reads), because
+the published store disables retries. The chunk reads from the public bucket take
+no retry setting in icechunk 2.3.1 and are not configured here. Also,
 `canopy_raster_from_chm` refuses windows above `MAX_WINDOW_PIXELS` (2 Gpx, about a
 20 km square) so a whole-tile fetch — ~13.5 Gpx and tens of thousands of chunk
 reads — is an explicit choice rather than a surprise.

@@ -36,9 +36,10 @@ CHM_CRS = "EPSG:3857"
 
 TREE_HEIGHT_THRESHOLD_M = 1.0
 
-# The published store's config disables retries (max_tries == 1). A tile-scale
-# window is tens of thousands of chunk fetches, so a dropped connection is a
-# certainty, not a risk; these are set explicitly on every open.
+# The published store's own repository config disables retries (max_tries == 1).
+# These constants set an explicit policy for repository storage only (snapshot,
+# manifest and config reads). icechunk 2.3.1 exposes no retry setting for virtual
+# chunk containers, so the chunk fetches from the public bucket are not covered.
 CHM_MAX_TRIES = 10
 CHM_INITIAL_BACKOFF_MS = 500
 CHM_MAX_BACKOFF_MS = 30_000
@@ -117,9 +118,11 @@ def canopy_raster_from_chm(
 def open_meta_chm() -> xr.DataArray:
     """Open the Meta CHM v2 native layer lazily as a georeferenced ``(y, x)`` DataArray.
 
-    Anonymous S3; the retry policy is set explicitly because the store's own
-    config disables retries. Coordinates are pixel centres derived from the
-    ``GeoTransform`` the store records on ``spatial_ref``.
+    Anonymous S3. ``cfg.storage`` sets an explicit retry policy for repository
+    storage (snapshot, manifest and config reads), because the store's own config
+    disables retries. The virtual chunk reads from the public bucket take no retry
+    setting in icechunk 2.3.1 and are not configured here. Coordinates are pixel
+    centres derived from the ``GeoTransform`` the store records on ``spatial_ref``.
     """
     import rioxarray  # noqa: F401  registers the .rio accessor
 

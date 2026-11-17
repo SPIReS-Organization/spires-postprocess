@@ -235,7 +235,10 @@ out = process(
 
 ### Cloud mask from OmniCloudMask
 
-`cloud_mask_from_valid` only inverts the provider QA (`valid`). For Landsat, HLS and
+`cloud_mask_from_qa(data.scene["qa_mask"], data.results["fsnow"])` ORs the cloud-type flags of the canonical
+`qa_mask` layer (`cloud`, `cirrus`, `cloud_buffer`, `cloud_shadow`) and does not count fill or
+saturation as cloud. `cloud_mask_from_valid` only inverts the single `valid` layer, which also
+flags nodata as cloud. For Landsat, HLS and
 Sentinel-2 (10–50 m) an alternative is [OmniCloudMask](https://github.com/DPIRD-DMA/OmniCloudMask),
 a sensor-agnostic Red/Green/NIR CNN. Install the pinned reference backend with
 `pip install 'spires-postprocess[cloudmask]'` (adds torch); the core package never imports it.

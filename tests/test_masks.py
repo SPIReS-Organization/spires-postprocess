@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 import xarray as xr
+from spires_contract._validate import ContractError
+from spires_contract.qa import QA_FLAGS
 
-from spires_postprocess.masks import cloud_mask_from_valid, mask_to_uint8
+from spires_postprocess.masks import cloud_mask_from_qa, cloud_mask_from_valid, mask_to_uint8
 
 
 def test_cloud_mask_is_inverse_of_valid(scene, grid):
@@ -18,6 +20,35 @@ def test_cloud_mask_is_inverse_of_valid(scene, grid):
 def test_cloud_mask_rejects_non_boolean(scene, grid):
     with pytest.raises(ValueError, match="boolean"):
         cloud_mask_from_valid(scene["valid"].astype("uint8"), grid)
+
+
+def make_qa(grid):
+    data = np.zeros((len(QA_FLAGS),) + grid.shape, dtype=bool)
+    qa = xr.DataArray(data, dims=("flag", "y", "x"),
+                      coords={"flag": list(QA_FLAGS), "y": grid.y, "x": grid.x}, name="qa_mask")
+    qa.values[QA_FLAGS.index("fill"), 0, 0] = True      # nodata pixel
+    qa.values[QA_FLAGS.index("cirrus"), 0, 1] = True    # cirrus-only pixel
+    qa.values[QA_FLAGS.index("snow"), 0, 2] = True      # snow is not cloud
+    return qa
+
+
+def test_cloud_mask_from_qa_excludes_fill_and_snow(grid):
+    mask = cloud_mask_from_qa(make_qa(grid), grid)
+    assert mask.name == "cloud_mask" and mask.dtype == bool and mask.dims == ("y", "x")
+    assert not bool(mask[0, 0])   # fill is not cloud
+    assert bool(mask[0, 1])       # cirrus is cloud
+    assert not bool(mask[0, 2])   # snow is not cloud
+    assert mask.attrs["source"] == "spires_io.qa_mask"
+
+
+def test_cloud_mask_from_qa_custom_flags(grid):
+    mask = cloud_mask_from_qa(make_qa(grid), grid, flags=("cloud",))
+    assert not bool(mask.any())
+
+
+def test_cloud_mask_from_qa_rejects_nonconforming(grid):
+    with pytest.raises(ContractError):
+        cloud_mask_from_qa(make_qa(grid).astype("uint8"), grid)
 
 
 def test_cloud_mask_rejects_coordinate_mismatch(scene, grid):

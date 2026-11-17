@@ -16,6 +16,7 @@ from spires_postprocess.lookup import (
 )
 from spires_postprocess.masks import (
     canopy_cover_fraction,
+    cloud_mask_from_qa,
     cloud_mask_from_valid,
     land_mask_from_tiles,
     tree_mask,
@@ -41,6 +42,7 @@ __all__ = [
     "Classifier",
     "classify_clouds",
     "cloud_mask_from_classes",
+    "cloud_mask_from_qa",
     "cloud_mask_from_valid",
     "compute_delta_vis",
     "compute_radiative_forcing",

@@ -131,3 +131,94 @@ def test_chunking_does_not_change_the_answer():
     per_row = temporal.fill_time_gaps(da, MAX_GAP, chunk_bytes=7 * 17 * 4).values
     assert (np.isnan(whole) == np.isnan(per_row)).all()
     np.testing.assert_array_equal(whole[~np.isnan(whole)], per_row[~np.isnan(per_row)])
+
+
+def test_time_coord_is_handed_back_unconverted():
+    da = cube([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0])
+    da = da.assign_coords(
+        time=("time", np.array([datetime.date(2025, 1, 1 + d) for d in (0, 1, 2, 3, 4, 5, 6)], dtype=object))
+    )
+    out = temporal.fill_time_gaps(da, MAX_GAP)
+    assert out.time.dtype == object
+    assert float(out.values.ravel()[1]) == pytest.approx(2.0)
+
+
+def test_dtype_dims_name_and_attrs_survive():
+    da = cube([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0])
+    da.attrs = {"long_name": "Fractional snow endmember", "units": "1"}
+    out = temporal.fill_time_gaps(da, MAX_GAP)
+    assert out.dtype == np.float32
+    assert out.dims == ("time", "y", "x")
+    assert out.name == "fsnow"
+    assert out.attrs == da.attrs
+
+
+def test_time_need_not_be_the_first_dim():
+    rng = np.random.default_rng(3)
+    values = rng.uniform(0.0, 1.0, (7, 6, 5)).astype("float32")
+    values[rng.uniform(size=values.shape) < 0.5] = np.nan
+    da = cube(values)
+    straight = temporal.fill_time_gaps(da, MAX_GAP)
+    transposed = temporal.fill_time_gaps(da.transpose("y", "x", "time"), MAX_GAP)
+    xr.testing.assert_allclose(straight, transposed.transpose("time", "y", "x"))
+
+
+def test_a_dataset_is_filled_variable_by_variable():
+    rng = np.random.default_rng(4)
+    layers = {}
+    for name in ("fsnow", "grain_radius"):
+        v = rng.uniform(0.0, 1.0, (7, 4, 4)).astype("float32")
+        v[rng.uniform(size=v.shape) < 0.5] = np.nan
+        layers[name] = cube(v).rename(name)
+    ds = xr.Dataset(layers)
+    got = temporal.fill_time_gaps(ds, MAX_GAP)
+    for name in layers:
+        want = oracle(ds[name])
+        assert (np.isnan(want.values) == np.isnan(got[name].values)).all(), name
+
+
+def test_a_timeless_variable_in_a_dataset_passes_through():
+    da = cube([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0])
+    static = xr.DataArray(np.float32([[2900.0]]), dims=("y", "x"), coords={"y": [0], "x": [0]})
+    ds = xr.Dataset({"fsnow": da, "elevation": static})
+    out = temporal.fill_time_gaps(ds, MAX_GAP)
+    xr.testing.assert_equal(out["elevation"], static)
+    assert not np.isnan(out["fsnow"].values).any()
+
+
+def test_the_input_is_not_mutated():
+    values = np.array([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0], dtype="float32").reshape(7, 1, 1)
+    da = cube(values.copy())
+    before = da.values.copy()
+    temporal.fill_time_gaps(da, MAX_GAP)
+    np.testing.assert_array_equal(np.isnan(da.values), np.isnan(before))
+
+
+def test_max_gap_accepts_the_obvious_spellings():
+    da = cube([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0])
+    for gap in (datetime.timedelta(days=14), np.timedelta64(14, "D"), 14, 14.0):
+        out = temporal.fill_time_gaps(da, gap)
+        assert float(out.values[1, 0, 0]) == pytest.approx(2.0)
+
+
+def test_an_integer_array_is_rejected():
+    da = cube([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]).astype("int32")
+    with pytest.raises(ValueError, match="float dtype"):
+        temporal.fill_time_gaps(da, MAX_GAP)
+
+
+def test_a_missing_time_dim_is_rejected():
+    da = xr.DataArray(np.float32([[1.0]]), dims=("y", "x"), coords={"y": [0], "x": [0]})
+    with pytest.raises(ValueError, match="no 'time' dim"):
+        temporal.fill_time_gaps(da, MAX_GAP)
+
+
+def test_a_time_axis_longer_than_the_index_dtype_is_rejected():
+    n = 128
+    da = xr.DataArray(
+        np.ones((n, 1, 1), dtype="float32"),
+        dims=("time", "y", "x"),
+        coords={"time": dates(range(n)), "y": [0], "x": [0]},
+    )
+    with pytest.raises(ValueError, match="127"):
+        temporal.fill_time_gaps(da, MAX_GAP)

@@ -238,3 +238,27 @@ inpainter is given), `fsnow_product`, `grain_radius_product`, `lap_concentration
 (gated at fsnow ≥ 0.10), and uint8 companions `cloud_mask`, `land_mask`, `tree_mask`,
 `shade_saturated_mask`. Water is a companion mask applied at the gate, never a NaN
 inside the chain; a missing land/water tile is an error, not a silent pass.
+
+### Canopy fraction from the Meta CHM (`chm` extra)
+
+When no local canopy raster covers the scene, `spires_postprocess.canopy_chm`
+derives the binary tree raster from the public Meta canopy-height model (CHM v2,
+~1.19 m, EPSG:3857) served as an icechunk store on Source Cooperative. The result
+feeds `canopy_cover_fraction` unchanged:
+
+```python
+from spires_postprocess import canopy_cover_fraction
+from spires_postprocess.canopy_chm import canopy_raster_from_chm, open_meta_chm
+
+chm = open_meta_chm()                                   # lazy, anonymous S3
+binary = canopy_raster_from_chm(chm, results["fsnow"])  # window + height > 1 m
+fraction = canopy_cover_fraction(binary, results["fsnow"])
+```
+
+Install with `pip install 'spires-postprocess[chm]'`. The open sets an explicit
+retry policy for repository storage (snapshot, manifest and config reads), because
+the published store disables retries. The chunk reads from the public bucket take
+no retry setting in icechunk 2.3.1 and are not configured here. Also,
+`canopy_raster_from_chm` refuses windows above `MAX_WINDOW_PIXELS` (2 Gpx, about a
+20 km square) so a whole-tile fetch — ~13.5 Gpx and tens of thousands of chunk
+reads — is an explicit choice rather than a surprise.

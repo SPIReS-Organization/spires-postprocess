@@ -181,6 +181,32 @@ the canonical `lap_concentration` result, which must have units `ppm` and
 `lap_type="dust"`. Delta-VIS is dimensionless; radiative forcing has units
 `W m-2`.
 
+## Temporal gap fill
+
+`fill_time_gaps` fills NaNs along `time` in a `(time, y, x)` result stack (or a
+Dataset of such variables; timeless variables pass through). It reproduces
+`interpolate_na(dim="time", method="linear", max_gap=...).ffill().bfill()` with an
+identical NaN pattern, vectorized so a tile-scale stack finishes in minutes rather
+than hours.
+
+```python
+import datetime
+from spires_postprocess import fill_time_gaps
+
+filled = fill_time_gaps(stack, max_gap=datetime.timedelta(days=14))
+```
+
+`max_gap` (default 14 days, inclusive) selects *how* a gap is filled, not *whether*:
+interior gaps whose bracketing observations are within `max_gap` are interpolated
+linearly in time; wider gaps and the leading/trailing runs fall back to persistence.
+The only pixel left NaN is one with no valid observation at all. With
+`extrapolate=True` leading and trailing runs no wider than `max_gap` are instead
+extended along the line through the nearest two observations.
+
+Null clouds (and anything else that is not an observation) *before* filling; the
+fill treats every NaN as a gap to close. The stack is processed in row chunks of
+about 512 MiB of input; peak memory is roughly eight times that.
+
 ## Lookup contracts
 
 The canonical albedo dataset uses primary variable `albedo`, float32 values,

@@ -20,12 +20,12 @@ from spires_postprocess.temporal import DEFAULT_MAX_GAP, fill_time_gaps
 
 __all__ = [
     "__version__",
-    "DEFAULT_MAX_GAP",
     "apply_snow_fraction_adjustments",
     "calculate_viewable_canopy_fraction",
     "compute_delta_vis",
     "compute_radiative_forcing",
     "compute_snow_albedo",
+    "DEFAULT_MAX_GAP",
     "fill_time_gaps",
     "load_albedo_lookup",
     "load_forcing_lookup",

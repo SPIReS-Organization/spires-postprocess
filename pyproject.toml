@@ -21,6 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+# Meta canopy-height model as a canopy_fraction source (spires_postprocess.canopy_chm).
+chm = ["icechunk>=2.1"]
 
 [project.urls]
 Homepage = "https://github.com/SPIReS-Organization/spires-postprocess"

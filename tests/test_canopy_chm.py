@@ -41,7 +41,7 @@ def test_threshold_is_strictly_greater_than_one_metre():
     raster = canopy_chm.canopy_raster_from_chm(height_raster(heights), mercator_grid())
     assert raster.dtype == np.uint8
     assert raster.dims == ("y", "x")
-    assert set(np.unique(raster.values)) <= {0, 1}
+    assert set(np.unique(raster.values)) == {0, 1}
     assert raster.rio.crs.to_epsg() == 3857
     assert raster.attrs["height_threshold_m"] == 1.0
     assert raster.attrs["source"] == "meta-chm-v2"

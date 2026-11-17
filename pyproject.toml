@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "bottleneck"]
 
 [project.urls]
 Homepage = "https://github.com/SPIReS-Organization/spires-postprocess"

@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 from scipy import ndimage
+from spires_contract.qa import CLOUD_FLAGS, validate_qa_mask
 
 from spires_postprocess._xarray_validation import (
     require_matching_coords,
@@ -43,7 +44,11 @@ def mask_to_uint8(mask: xr.DataArray) -> xr.DataArray:
 
 
 def cloud_mask_from_valid(valid: xr.DataArray, target: xr.DataArray) -> xr.DataArray:
-    """Invert a spires-io ``valid`` layer into a cloud / invalid-observation mask."""
+    """Invert a spires-io ``valid`` layer into a cloud / invalid-observation mask.
+
+    Prefer :func:`cloud_mask_from_qa` when the scene carries ``qa_mask``; this
+    function also counts nodata as cloud.
+    """
     validate_target_layout(target, "target")
     _require_boolean(valid, "valid")
     _require_plane(valid, target, "valid")
@@ -51,6 +56,29 @@ def cloud_mask_from_valid(valid: xr.DataArray, target: xr.DataArray) -> xr.DataA
     mask.attrs = {
         "long_name": "Cloud or invalid observation mask (True = excluded)",
         "source": str(valid.attrs.get("source", "spires_io.valid")),
+    }
+    return mask
+
+
+def cloud_mask_from_qa(
+    qa_mask: xr.DataArray,
+    target: xr.DataArray,
+    flags: tuple[str, ...] = CLOUD_FLAGS,
+) -> xr.DataArray:
+    """Build a cloud mask from a spires-contract ``qa_mask`` by OR-ing ``flags``.
+
+    Unlike :func:`cloud_mask_from_valid`, fill/nodata and saturation are not
+    counted as cloud unless named in ``flags``.
+    """
+    validate_target_layout(target, "target")
+    validate_qa_mask(qa_mask)
+    mask = qa_mask.sel(flag=list(flags)).any("flag")
+    _require_plane(mask, target, "qa_mask")
+    mask = mask.rename("cloud_mask")
+    mask.attrs = {
+        "long_name": "Cloud mask (True = excluded)",
+        "source": "spires_io.qa_mask",
+        "flags": " ".join(flags),
     }
     return mask
 
